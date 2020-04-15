@@ -140,7 +140,7 @@ if __name__ == '__main__':
         batch_rtgs = np.array(batch_rtgs)-np.sum(ep_rets)/(episode+1) # subtract baseline
         pg_loss, grads = grad(policy_net, batch_obs, batch_acts, batch_rtgs)
         optimizer.apply_gradients(zip(grads, policy_net.trainable_variables))
-        logging.info("\n====\nbatch: {}, episode: {} \nloss: {} \nmean return: {} \n====\n".format(batch+1, episode+1, pg_loss, np.mean(batch_rtgs)))
+        logging.info("\n====\nbatch: {}, episode: {} \nloss: {} \nmean return: {} \n====\n".format(batch, episode, pg_loss, np.mean(batch_rtgs)))
 
 fig, ax = plt.subplots(figsize=(8, 6))
 fig.suptitle('Averaged Returns')
