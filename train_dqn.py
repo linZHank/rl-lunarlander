@@ -37,7 +37,7 @@ qnet_active = tf.keras.Sequential(
     [
         tf.keras.layers.InputLayer(input_shape=env.observation_space.shape),
         tf.keras.layers.Dense(128, activation='relu'),
-        tf.keras.layers.Dense(64, activation='relu'),
+        tf.keras.layers.Dense(128, activation='relu'),
         tf.keras.layers.Dense(env.action_space.n)
     ]
 )
@@ -139,27 +139,36 @@ def epsilon_greedy(qvals, epsilon):
 
 
 # params
-num_episodes = 1000
-num_steps = 400
+num_episodes = 10000
+num_steps = 10000
 gamma = 0.99
 decay_rate = 0.99
-warmup = 64
+warmup = 128
 epsilon = 1.
 buffer_size = 100000
 batch_size = 8192
 replay_buffer = []
 # metrics_mse = tf.keras.metrics.MeanSquaredError()
-train_loss = []
+# train_loss = []
 step_counter = 0
 update_steps = 8192
 # Create Optimizer
-optimizer = tf.keras.optimizers.Adam(learning_rate=1e-3)
+optimizer = tf.keras.optimizers.Adam(learning_rate=3e-4)
+# Create Checkpoint
+checkpoint_dir = './training_checkpoints/dqn'
+if not os.path.exists(checkpoint_dir):
+    os.makedirs(checkpoint_dir)
+checkpoint_prefix = os.path.join(checkpoint_dir, "ckpt")
+ckpt = tf.train.Checkpoint(step=tf.Variable(1), optimizer=optimizer, model=qnet_active)
+ckpt_manager = tf.train.CheckpointManager(ckpt, checkpoint_dir, max_to_keep=200)
+ckpt.restore(manager.latest_checkpoint)
 ep_rets, ave_rets = [], []
 if __name__ == '__main__':
     for ep in range(num_episodes):
         obs, done, rewards = env.reset(), False, []
         if ep >= warmup:
             epsilon *= decay_rate
+            epsilon  = np.clip(epsilon, 0.1, 1)
         for st in range(num_steps):
             # env.render()
             qvals = np.squeeze(qnet_active(obs.reshape(1,-1)).numpy())
@@ -173,7 +182,11 @@ if __name__ == '__main__':
                 logging.debug("Initial Loss: {}".format(q_loss))
                 optimizer.apply_gradients(zip(grads, qnet_active.trainable_variables))
                 logging.debug("After gradient Loss: {}".format(compute_loss(qnet_active, qnet_stable, batch_reps)))
-                train_loss.append(q_loss)
+                # train_loss.append(q_loss)
+                ckpt.step.assign_add(1)
+                if not int(ckpt.step) % 20000:
+                    save_path = ckpt_manager.save()
+            # update qnet_stable every update_steps
             step_counter += 1
             if not step_counter % update_steps:
                 qnet_stable.set_weights(qnet_active.get_weights())
@@ -186,6 +199,7 @@ if __name__ == '__main__':
                 logging.info("\n---\nepisode: {} \nepisode return: {}, averaged return: {} \n---\n".format(ep+1, ep_rets[-1], ave_rets[-1]))
                 break
 
+# Plot returns and loss
 fig, axes = plt.subplots(2, figsize=(12, 8))
 fig.suptitle('Metrics')
 axes[0].set_xlabel("Episode")
@@ -195,3 +209,6 @@ axes[1].set_xlabel("Steps")
 axes[1].set_ylabel("Loss")
 axes[1].plot(train_loss)
 plt.show()
+
+# Save final ckpt
+save_path = ckpt_manager.save()
