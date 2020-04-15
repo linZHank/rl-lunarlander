@@ -35,7 +35,7 @@ env = gym.make('LunarLander-v2')
 policy_net = tf.keras.Sequential(
     [
         tf.keras.layers.InputLayer(input_shape=env.observation_space.shape),
-        tf.keras.layers.Dense(64, activation='relu'),
+        tf.keras.layers.Dense(128, activation='relu'),
         tf.keras.layers.Dense(64, activation='relu'),
         tf.keras.layers.Dense(env.action_space.n, activation='softmax')
     ]
@@ -43,7 +43,7 @@ policy_net = tf.keras.Sequential(
 policy_net.summary()
 
 # Create an Optimizer
-optimizer = tf.keras.optimizers.Adam(learning_rate=0.0003)
+optimizer = tf.keras.optimizers.Adam(learning_rate=0.0001)
 
 def grad(policy_net, batch_obs, batch_acts, batch_rets):
     with tf.GradientTape() as tape:
@@ -100,8 +100,8 @@ def reward_to_go(rews):
 
 
 # params
-num_batches = 200
-batch_size = 5000
+num_batches = 4096
+batch_size = 8192
 if __name__ == '__main__':
     obs, done = env.reset(), False
     ep_rets, ave_rets = [], []
@@ -137,7 +137,7 @@ if __name__ == '__main__':
                 if len(batch_obs) > batch_size:
                     batch += 1
                     break
-        # batch_rtgs = np.array(batch_rtgs)-np.sum(ep_rets)/(episode+1) # subtract baseline
+        batch_rtgs = np.array(batch_rtgs)-np.sum(ep_rets)/(episode+1) # subtract baseline
         pg_loss, grads = grad(policy_net, batch_obs, batch_acts, batch_rtgs)
         optimizer.apply_gradients(zip(grads, policy_net.trainable_variables))
         logging.info("\n====\nbatch: {}, episode: {} \nloss: {} \nmean return: {} \n====\n".format(batch+1, episode+1, pg_loss, np.mean(batch_rtgs)))
