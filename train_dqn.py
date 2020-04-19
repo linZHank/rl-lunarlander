@@ -18,7 +18,7 @@ if gpus:
         print(e)
     # Restrict TensorFlow to only use the first GPU
     try:
-        tf.config.experimental.set_visible_devices(gpus[1], 'GPU')
+        tf.config.experimental.set_visible_devices(gpus[0], 'GPU')
         logical_gpus = tf.config.experimental.list_logical_devices('GPU')
         print(len(gpus), "Physical GPUs,", len(logical_gpus), "Logical GPU")
     except RuntimeError as e:
@@ -153,7 +153,7 @@ replay_buffer = []
 step_counter = 0
 update_steps = 8192
 # Create Optimizer
-optimizer = tf.keras.optimizers.Adam(learning_rate=3e-4)
+optimizer = tf.keras.optimizers.Adam(learning_rate=1e-4)
 # Create Checkpoint
 checkpoint_dir = './training_checkpoints/dqn'
 if not os.path.exists(checkpoint_dir):
@@ -161,7 +161,7 @@ if not os.path.exists(checkpoint_dir):
 checkpoint_prefix = os.path.join(checkpoint_dir, "ckpt")
 ckpt = tf.train.Checkpoint(step=tf.Variable(1), optimizer=optimizer, model=qnet_active)
 ckpt_manager = tf.train.CheckpointManager(ckpt, checkpoint_dir, max_to_keep=200)
-ckpt.restore(manager.latest_checkpoint)
+ckpt.restore(ckpt_manager.latest_checkpoint)
 ep_rets, ave_rets = [], []
 if __name__ == '__main__':
     for ep in range(num_episodes):
@@ -199,16 +199,16 @@ if __name__ == '__main__':
                 logging.info("\n---\nepisode: {} \nepisode return: {}, averaged return: {} \n---\n".format(ep+1, ep_rets[-1], ave_rets[-1]))
                 break
 
+# Save final ckpt
+save_path = ckpt_manager.save()
+
 # Plot returns and loss
 fig, axes = plt.subplots(2, figsize=(12, 8))
 fig.suptitle('Metrics')
 axes[0].set_xlabel("Episode")
 axes[0].set_ylabel("Averaged Return")
 axes[0].plot(ave_rets)
-axes[1].set_xlabel("Steps")
-axes[1].set_ylabel("Loss")
-axes[1].plot(train_loss)
+# axes[1].set_xlabel("Steps")
+# axes[1].set_ylabel("Loss")
+# axes[1].plot(train_loss)
 plt.show()
-
-# Save final ckpt
-save_path = ckpt_manager.save()
