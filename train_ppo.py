@@ -25,7 +25,7 @@ if gpus:
         print(e)
 
 import logging
-logging.basicConfig(format='%(asctime)s %(message)s',level=logging.DEBUG)
+logging.basicConfig(format='%(asctime)s %(message)s',level=logging.INFO)
 
 
 # Create LunarLander env
@@ -116,17 +116,18 @@ def reward_to_go(rews, gamma):
 
 
 # params
-num_batches = 256
+model_dir = './training_checkpoints/ppo'
+num_batches = 1000
 batch_size = 8192
-lr_actor = 3e-4
-lr_critic = 1e-3
+lr_actor = 1e-4
+lr_critic = 3e-3
 gamma = 0.99
 actor_train_iters = 64
 critic_train_iters = 64
 # Create Optimizers
 optimizer_actor = tf.keras.optimizers.Adam(learning_rate=lr_actor)
 optimizer_critic = tf.keras.optimizers.Adam(learning_rate=lr_critic)
-
+save_freq = 100
 #
 obs, done = env.reset(), False
 ep_rets, ave_rets = [], []
@@ -140,7 +141,7 @@ for s in range(num_batches):
     batch_acts = []
     batch_rets = [] # discounted reward to go
     batch_dones = []
-    batch_next_obs = []
+    # batch_next_obs = []
     batch_advs = []
     rewards = []
     while True:
@@ -156,13 +157,13 @@ for s in range(num_batches):
         batch_logprobs.append(np.squeeze(logprob.numpy()))
         batch_acts.append(action)
         rewards.append(np.float32(rew))
-        batch_dones.append(done)
-        batch_next_obs.append(next_obs.copy())
+        # batch_dones.append(done)
+        # batch_next_obs.append(next_obs.copy())
         # update obs
         obs = next_obs.copy() # Critical
         step += 1
         # print(obs, rew, done, info)
-        logging.debug("\n-\nbatch: {}, episode: {}, step: {}, batch length: {} \naction: {} \nobs: {}".format(batch+1, episode+1, step+1, len(batch_obs), action, obs))
+        logging.debug("\n-\nbatch: {}, episode: {}, step: {}, batch length: {} \naction: {} \nobs: {} \nreward: {}".format(batch+1, episode+1, step+1, len(batch_obs), action, obs, rew))
         if done:
             episode += 1
             step = 0
@@ -175,7 +176,7 @@ for s in range(num_batches):
             batch_rets += list(rtgs)
             batch_advs += advs
             # print("rewards: {} \ndiscounted reward to go: {} \nvalues: {} \nnext values: {} \nadvantages: {}".format(rewards, rtgs, vals, nvals, advs))
-            # logging.info("\n---\nbatch: {}, episode: {} \nreturn: {} \n".format(batch+1, episode, ep_rets[-1]))
+            logging.info("\n---\nbatch: {}, episode: {} \nreturn: {} \n".format(batch+1, episode, ep_rets[-1]))
             obs, done, rewards = env.reset(), False, []
             if len(batch_obs) > batch_size:
                 batch += 1
@@ -189,7 +190,19 @@ for s in range(num_batches):
         loss_critic, grads_critic = grad_critic(critic_net, batch_obs, batch_rets)
         optimizer_critic.apply_gradients(zip(grads_critic, critic_net.trainable_variables))
     # log batch
-    logging.info("\n====\nbatch: {}, episode: {} \nloss_actor: {}, loss_critic: {} \nmean return: {} \n====\n".format(batch, episode, loss_actor, loss_critic, ave_rets))
+    logging.info("\n====\nbatch: {}, episode: {} \nloss_actor: {}, loss_critic: {} \nmean return: {} \n====\n".format(batch, episode, loss_actor, loss_critic, ave_rets[-1]))
+    # save models
+    if not batch % save_freq or batch==num_batches:
+        actor_net_path = os.path.join(model_dir, 'actor_net', str(batch)+'.h5')
+        critic_net_path = os.path.join(model_dir, 'critic_net', str(batch)+'.h5')
+        if not os.path.exists(os.path.dirname(actor_net_path)):
+            os.makedirs(os.path.dirname(actor_net_path))
+        if not os.path.exists(os.path.dirname(critic_net_path)):
+            os.makedirs(os.path.dirname(critic_net_path))
+        # save model
+        actor_net.save(actor_net_path)
+        critic_net.save(critic_net_path)
+        logging.debug("models saved at {}".format(model_dir))
 
 # plot returns
 fig, ax = plt.subplots(figsize=(8, 6))
