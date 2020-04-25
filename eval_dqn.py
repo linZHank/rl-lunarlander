@@ -13,16 +13,22 @@ logging.basicConfig(format='%(asctime)s %(message)s',level=logging.DEBUG)
 # Create LunarLander env
 env = gym.make('LunarLander-v2')
 
-# Create Policy Network
-qnet_active = tf.keras.Sequential(
-    [
-        tf.keras.layers.InputLayer(input_shape=env.observation_space.shape),
-        tf.keras.layers.Dense(128, activation='relu'),
-        tf.keras.layers.Dense(128, activation='relu'),
-        tf.keras.layers.Dense(env.action_space.n)
-    ]
-)
-qnet_active.summary()
+# # Create Policy Network
+# qnet_active = tf.keras.Sequential(
+#     [
+#         tf.keras.layers.InputLayer(input_shape=env.observation_space.shape),
+#         tf.keras.layers.Dense(128, activation='relu'),
+#         tf.keras.layers.Dense(128, activation='relu'),
+#         tf.keras.layers.Dense(env.action_space.n)
+#     ]
+# )
+# qnet_active.summary()
+
+# # Restore checkpoint
+# optimizer = tf.keras.optimizers.Adam(learning_rate=3e-4)
+# checkpoint_dir = './training_checkpoints/dqn'
+# ckpt = tf.train.Checkpoint(optimizer=optimizer, model=qnet_active)
+# ckpt.restore(tf.train.latest_checkpoint(checkpoint_dir))
 
 def epsilon_greedy(qvals, epsilon):
     if np.random.uniform() > epsilon:
@@ -32,13 +38,9 @@ def epsilon_greedy(qvals, epsilon):
 
     return act_id
 
-
-# Restore checkpoint
-optimizer = tf.keras.optimizers.Adam(learning_rate=3e-4)
-checkpoint_dir = './training_checkpoints/dqn'
-ckpt = tf.train.Checkpoint(optimizer=optimizer, model=qnet_active)
-ckpt.restore(tf.train.latest_checkpoint(checkpoint_dir))
-
+# load model
+model_path = './training_models/dqn/2020-04-24-00-19/700000.h5'
+qnet_active = tf.keras.models.load_model(model_path)
 # params
 num_episodes = 10
 num_steps = 1000
