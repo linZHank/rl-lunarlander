@@ -39,7 +39,7 @@ def epsilon_greedy(qvals, epsilon):
     return act_id
 
 # load model
-model_path = './training_models/dqn/2020-04-24-00-19/700000.h5'
+model_path = './training_models/dqn/2020-04-24-00-19/1850000.h5'
 qnet_active = tf.keras.models.load_model(model_path)
 # params
 num_episodes = 10

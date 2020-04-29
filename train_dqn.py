@@ -4,6 +4,7 @@ import numpy as np
 import random
 import gym
 import matplotlib.pyplot as plt
+from datetime import datetime
 
 import tensorflow as tf
 # restrict GPU and memory growth
@@ -36,8 +37,8 @@ env = gym.make('LunarLander-v2')
 qnet_active = tf.keras.Sequential(
     [
         tf.keras.layers.InputLayer(input_shape=env.observation_space.shape),
-        tf.keras.layers.Dense(128, activation='relu'),
-        tf.keras.layers.Dense(128, activation='relu'),
+        tf.keras.layers.Dense(64, activation='relu'),
+        tf.keras.layers.Dense(64, activation='relu'),
         tf.keras.layers.Dense(env.action_space.n)
     ]
 )
@@ -153,15 +154,18 @@ replay_buffer = []
 step_counter = 0
 update_steps = 8192
 # Create Optimizer
-optimizer = tf.keras.optimizers.Adam(learning_rate=1e-4)
+optimizer = tf.keras.optimizers.Adam(learning_rate=3e-4)
 # Create Checkpoint
-checkpoint_dir = './training_checkpoints/dqn'
-if not os.path.exists(checkpoint_dir):
-    os.makedirs(checkpoint_dir)
-checkpoint_prefix = os.path.join(checkpoint_dir, "ckpt")
-ckpt = tf.train.Checkpoint(step=tf.Variable(1), optimizer=optimizer, model=qnet_active)
-ckpt_manager = tf.train.CheckpointManager(ckpt, checkpoint_dir, max_to_keep=200)
-ckpt.restore(ckpt_manager.latest_checkpoint)
+# checkpoint_dir = './training_checkpoints/dqn'
+# if not os.path.exists(checkpoint_dir):
+#     os.makedirs(checkpoint_dir)
+# checkpoint_prefix = os.path.join(checkpoint_dir, "ckpt")
+# ckpt = tf.train.Checkpoint(step=tf.Variable(1), optimizer=optimizer, model=qnet_active)
+# ckpt_manager = tf.train.CheckpointManager(ckpt, checkpoint_dir, max_to_keep=200)
+# ckpt.restore(ckpt_manager.latest_checkpoint)
+model_dir = './training_models/dqn/'+datetime.now().strftime("%Y-%m-%d-%H-%M")
+if not os.path.exists(model_dir):
+    os.makedirs(model_dir)
 ep_rets, ave_rets = [], []
 if __name__ == '__main__':
     for ep in range(num_episodes):
@@ -182,14 +186,16 @@ if __name__ == '__main__':
                 logging.debug("Initial Loss: {}".format(q_loss))
                 optimizer.apply_gradients(zip(grads, qnet_active.trainable_variables))
                 logging.debug("After gradient Loss: {}".format(compute_loss(qnet_active, qnet_stable, batch_reps)))
-                # train_loss.append(q_loss)
-                ckpt.step.assign_add(1)
-                if not int(ckpt.step) % 20000:
-                    save_path = ckpt_manager.save()
+                # save ckpt
+                # ckpt.step.assign_add(1)
+                # if not int(ckpt.step) % 20000:
+                #     save_path = ckpt_manager.save()
             # update qnet_stable every update_steps
             step_counter += 1
             if not step_counter % update_steps:
                 qnet_stable.set_weights(qnet_active.get_weights())
+            if not step_counter % 50000:
+                qnet_active.save(os.path.join(model_dir, str(step_counter)+'.h5'))
             rewards.append(rew)
             logging.info("\n-\nepisode: {}, step: {}, epsilon: {} \naction: {} \nobs: {}, \nreward: {}".format(ep+1, st+1, epsilon, action, obs, rew))
             obs = next_obs.copy()
@@ -200,7 +206,9 @@ if __name__ == '__main__':
                 break
 
 # Save final ckpt
-save_path = ckpt_manager.save()
+# save_path = ckpt_manager.save()
+# save model
+qnet_active.save(os.path.join(model_dir, str(step_counter)+'.h5'))
 
 # Plot returns and loss
 fig, axes = plt.subplots(2, figsize=(12, 8))
