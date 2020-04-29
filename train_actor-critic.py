@@ -83,6 +83,7 @@ def compute_loss_actor(actor_net, buffer_obs, buffer_logprobs, buffer_acts, buff
     kld_approx = tf.math.reduce_mean(logprobs_old - logprobs)
     entropy = tf.math.reduce_sum(tf.math.multiply(-probs, logprobs))
     actor_info = dict(kl=kld_approx, entropy=entropy)
+
     return loss_actor, actor_info
 
 def grad_actor(actor_net, buffer_obs, buffer_logprobs, buffer_acts, buffer_advs):
@@ -141,7 +142,7 @@ for e in range(num_epochs):
     buffer_obs = []
     buffer_acts = []
     buffer_advs = []
-    buffer_rews = [] 
+    buffer_rews = []
     buffer_rets = [] # discounted reward to go
     buffer_vals = []
     buffer_logprobs = []
@@ -154,7 +155,6 @@ for e in range(num_epochs):
         act = np.squeeze(tf.random.categorical(logits=logprob, num_samples=1)) # squeeze (1,1) to (1,)
         # logging.debug("sampled action: {}".format(act))
         next_obs, rew, done, info = env.step(act)
-        logging.debug("next obs: {} \nreward: {} \ndone: {}".format(next_obs, rew, done))
         # store experience into buffer
         buffer_obs.append(obs.copy())
         buffer_acts.append(act)
@@ -196,6 +196,7 @@ for e in range(num_epochs):
     for i in range(val_train_iters):
         loss_critic, grads_critic = grad_critic(critic_net, buffer_obs, buffer_rets)
         optimizer_critic.apply_gradients(zip(grads_critic, critic_net.trainable_variables))
+        loss_critic = compute_loss_critic(critic_net, buffer_obs, buffer_rets)
 #
     logging.info(
         "\n================================================================\nEpoch: {} \nLossPiOld: {}, LossPiUpdated: {} \nKLDivergence: {} \nEntropy: {} \nLossVOld: {}, LossVUpdated: {} \nAveEpReturn: {} \nTime: {} \n================================================================\n".format(

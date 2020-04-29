@@ -1,5 +1,6 @@
 import sys
 import os
+import time
 import numpy as np
 import gym
 import matplotlib.pyplot as plt
@@ -35,8 +36,8 @@ env = gym.make('LunarLander-v2')
 actor_net = tf.keras.Sequential(
     [
         tf.keras.layers.InputLayer(input_shape=env.observation_space.shape),
-        tf.keras.layers.Dense(128, activation='tanh'),
-        tf.keras.layers.Dense(128, activation='tanh'),
+        tf.keras.layers.Dense(32, activation='tanh'),
+        tf.keras.layers.Dense(32, activation='tanh'),
         tf.keras.layers.Dense(env.action_space.n)
     ]
 )
@@ -46,61 +47,63 @@ actor_net.summary()
 critic_net = tf.keras.Sequential(
     [
         tf.keras.layers.InputLayer(input_shape=env.observation_space.shape),
-        tf.keras.layers.Dense(128, activation='relu'),
-        tf.keras.layers.Dense(64, activation='relu'),
+        tf.keras.layers.Dense(32, activation='relu'),
+        tf.keras.layers.Dense(32, activation='relu'),
         tf.keras.layers.Dense(1)
     ]
 )
 critic_net.summary()
 
-def compute_loss_actor(actor_net, batch_obs, batch_logprobs, batch_acts, batch_advs, epsilon=0.2):
-    tensor_obs = tf.convert_to_tensor(batch_obs)
-    # print(tensor_obs)
-    tensor_logprobs = tf.nn.log_softmax(actor_net(tensor_obs))
-    # print(tensor_logprobs)
-    tensor_new_samples = tf.squeeze(tf.random.categorical(tensor_logprobs, num_samples=1))
-    # print(tensor_new_samples)
-    tensor_logpi = tf.math.multiply(tensor_logprobs, tf.one_hot(tensor_new_samples, depth=env.action_space.n))
-    # print(tensor_logpi)
-    tensor_reduce_logpi = tf.math.reduce_sum(tensor_logpi, axis=1)
-    # print(tensor_reduce_logpi)
-    tensor_logprobs_old = tf.convert_to_tensor(batch_logprobs)
-    # print(tensor_logprobs_old)
-    tensor_acts = tf.convert_to_tensor(batch_acts)
-    tensor_logpi_old = tf.math.multiply(tensor_logprobs_old, tf.one_hot(tensor_acts, depth=env.action_space.n))
-    tensor_reduce_logpi_old = tf.math.reduce_sum(tensor_logpi_old, axis=1)
-    # print(tensor_reduce_logpi_old)
-    tensor_ratio = tf.math.exp(tensor_reduce_logpi - tensor_reduce_logpi_old)
-    # print(tensor_ratio)
-    tensor_advs = tf.convert_to_tensor(batch_advs)
-    # print(tensor_advs)
-    tensor_ratio_clip = tf.clip_by_value(tensor_ratio, clip_value_min=1-epsilon, clip_value_max=1+epsilon)
-    tensor_objs_clip = tf.math.multiply(tensor_ratio_clip, tensor_advs)
-    # print("clipped objective: {}".format(tensor_objs_clip))
-    tensor_objs = tf.math.minimum(tf.math.multiply(tensor_ratio, tensor_advs), tensor_objs_clip)
-    # print("min obj: {}".format(tensor_objs))
-    loss_actor = -tf.math.reduce_mean(tensor_objs)
-    # print(loss_actor)
+def compute_loss_actor(actor_net, buffer_obs, buffer_logprobs, buffer_acts, buffer_advs, epsilon=0.2):
+    tensor_obs = tf.convert_to_tensor(buffer_obs)
+    # compute logprobs
+    logits = actor_net(tensor_obs)
+    probs = tf.nn.softmax(logits)
+    logprobs = tf.math.log(probs)
+    # compute logprob of new policy by sampling new acts
+    new_samples = tf.squeeze(tf.random.categorical(logprobs, num_samples=1))
+    logpis_onehot = tf.math.multiply(logprobs, tf.one_hot(new_samples, depth=env.action_space.n))
+    logpis = tf.math.reduce_sum(logpis_onehot, axis=1)
+    # compute logprobs of old policy
+    tensor_logprobs_old = tf.convert_to_tensor(buffer_logprobs)
+    tensor_acts = tf.convert_to_tensor(buffer_acts)
+    logpis_onehot_old = tf.math.multiply(tensor_logprobs_old, tf.one_hot(tensor_acts, depth=env.action_space.n))
+    logpis_old = tf.math.reduce_sum(logpis_onehot_old, axis=1)
+    # compute clipped objective
+    ratios = tf.math.exp(logpis - logpis_old)
+    tensor_advs = tf.convert_to_tensor(buffer_advs)
+    # next 3 lines apply advantage normalization trick
+    mean_advs = tf.math.reduce_mean(tensor_advs)
+    std_advs = tf.math.reduce_std(tensor_advs)
+    advs_norm = (tensor_advs-mean_advs)/std_advs
+    ratios_clip = tf.clip_by_value(ratios, clip_value_min=1-epsilon, clip_value_max=1+epsilon)
+    objs_clip = tf.math.multiply(ratios_clip, advs_norm)
+    objs = tf.math.minimum(tf.math.multiply(ratios, advs_norm), objs_clip)
+    loss_actor = -tf.math.reduce_mean(objs)
+    # compute KL-divergence and Entropy
+    kld_approx = tf.math.reduce_mean(tensor_logprobs_old - logprobs)
+    entropy = tf.math.reduce_sum(tf.math.multiply(-probs, logprobs))
+    actor_info = dict(kl=kld_approx, entropy=entropy)
 
-    return loss_actor
+    return loss_actor, actor_info
 
-def compute_loss_critic(critic_net, batch_obs, batch_rets):
-    vals_pred = tf.squeeze(critic_net(tf.convert_to_tensor(batch_obs)))
-    vals_target = tf.convert_to_tensor(batch_rets)
+def compute_loss_critic(critic_net, buffer_obs, buffer_rets):
+    vals_pred = tf.squeeze(critic_net(tf.convert_to_tensor(buffer_obs)))
+    vals_target = tf.convert_to_tensor(buffer_rets)
     loss_critic = tf.keras.losses.MSE(vals_target, vals_pred)
     # print(loss_critic)
 
     return loss_critic
 
-def grad_actor(actor_net, batch_obs, batch_logprobs, batch_acts, batch_advs):
+def grad_actor(actor_net, buffer_obs, buffer_logprobs, buffer_acts, buffer_advs):
     with tf.GradientTape() as tape:
-        loss_actor = compute_loss_actor(actor_net, batch_obs, batch_logprobs, batch_acts, batch_advs)
+        loss_actor, _ = compute_loss_actor(actor_net, buffer_obs, buffer_logprobs, buffer_acts, buffer_advs)
 
     return loss_actor, tape.gradient(loss_actor, actor_net.trainable_variables)
 
-def grad_critic(critic_net, batch_obs, batch_rets):
+def grad_critic(critic_net, buffer_obs, buffer_rets):
     with tf.GradientTape() as tape:
-        loss_critic = compute_loss_critic(critic_net, batch_obs, batch_rets)
+        loss_critic = compute_loss_critic(critic_net, buffer_obs, buffer_rets)
 
     return loss_critic, tape.gradient(loss_critic, critic_net.trainable_variables)
 
@@ -116,93 +119,117 @@ def reward_to_go(rews, gamma):
 
 
 # params
-model_dir = './training_checkpoints/ppo'
-num_batches = 1000
-batch_size = 8192
-lr_actor = 1e-4
-lr_critic = 3e-3
-gamma = 0.99
-actor_train_iters = 64
-critic_train_iters = 64
+model_dir = './training_models/ppo'
+save_freq = 100
+num_epochs = 1000
+buffer_size = 4096
+lr_actor = 3e-4
+lr_critic = 1e-3
+gamma = 0.999
+lam = 0.97
+target_kl = 0.01
+actor_train_iters = 80
+critic_train_iters = 80
 # Create Optimizers
 optimizer_actor = tf.keras.optimizers.Adam(learning_rate=lr_actor)
 optimizer_critic = tf.keras.optimizers.Adam(learning_rate=lr_critic)
-save_freq = 100
 #
 obs, done = env.reset(), False
 ep_rets, ave_rets = [], []
-batch = 0
+epoch = 0
 episode = 0
 step = 0
-for s in range(num_batches):
-    batch_obs = []
-    batch_vals = []
-    batch_logprobs = []
-    batch_acts = []
-    batch_rets = [] # discounted reward to go
-    batch_dones = []
-    # batch_next_obs = []
-    batch_advs = []
-    rewards = []
+start_time = time.time()
+for s in range(num_epochs):
+    buffer_obs = []
+    buffer_acts = []
+    buffer_advs = []
+    buffer_rews = []
+    buffer_rets = [] # discounted reward to go
+    buffer_vals = []
+    buffer_logprobs = []
     while True:
         # env.render()
         val = critic_net(obs.reshape(1,-1))
         logprob = tf.nn.log_softmax(actor_net(obs.reshape(1,-1))) # shape=(1, action_space.n)
         # print(logprob) # debug
-        action = np.squeeze(tf.random.categorical(logits=logprob, num_samples=1)) # squeeze (1,1) to (1,)
+        act = np.squeeze(tf.random.categorical(logits=logprob, num_samples=1)) # squeeze (1,1) to (1,)
         # print(action) # debug
-        next_obs, rew, done, info = env.step(action)
-        batch_obs.append(obs.copy())
-        batch_vals.append(np.squeeze(val.numpy()))
-        batch_logprobs.append(np.squeeze(logprob.numpy()))
-        batch_acts.append(action)
-        rewards.append(np.float32(rew))
-        # batch_dones.append(done)
-        # batch_next_obs.append(next_obs.copy())
+        next_obs, rew, done, info = env.step(act)
+        # store experience into buffer
+        buffer_obs.append(obs.copy())
+        buffer_acts.append(act)
+        buffer_rews.append(rew)
+        buffer_vals.append(np.squeeze(val.numpy()))
+        buffer_logprobs.append(np.squeeze(logprob.numpy()))
+        # print(obs, rew, done, info)
+        logging.debug("\n-\nepoch: {}, episode: {}, step: {}, epoch length: {} \nobs: {} \naction: {} \nreward: {} \ndone: {} \nnext_obs: {}".format(epoch+1, episode+1, step+1, len(buffer_acts), obs, act, rew, done, next_obs))
         # update obs
         obs = next_obs.copy() # Critical
         step += 1
-        # print(obs, rew, done, info)
-        logging.debug("\n-\nbatch: {}, episode: {}, step: {}, batch length: {} \naction: {} \nobs: {} \nreward: {}".format(batch+1, episode+1, step+1, len(batch_obs), action, obs, rew))
         if done:
             episode += 1
-            step = 0
-            ep_rets.append(sum(rewards))
+            # compute discounted reward to go
+            rews = buffer_rews[-step:] # rewards in last episode
+            rtgs = reward_to_go(rews, gamma)
+            # compute advantages
+            vals = buffer_vals[-step:]
+            nvals = vals[1:]+[0] # values of next states
+            advs = [np.float32(rtgs[i]+gamma*lam*nvals[i]-vals[i]) for i in range(len(rews))]
+            # store discounted returns and advantages
+            buffer_rets += list(rtgs)
+            buffer_advs += advs
+            # sum episode
+            ep_rets.append(sum(rews))
             ave_rets.append(sum(ep_rets)/len(ep_rets))
-            rtgs = reward_to_go(rewards, gamma)
-            vals = batch_vals[-len(rewards):]
-            nvals = vals[1:]+[0]
-            advs = [np.float32(rtgs[i]+gamma*nvals[i]-vals[i]) for i in range(len(rewards))]
-            batch_rets += list(rtgs)
-            batch_advs += advs
-            # print("rewards: {} \ndiscounted reward to go: {} \nvalues: {} \nnext values: {} \nadvantages: {}".format(rewards, rtgs, vals, nvals, advs))
-            logging.info("\n---\nbatch: {}, episode: {} \nreturn: {} \n".format(batch+1, episode, ep_rets[-1]))
-            obs, done, rewards = env.reset(), False, []
-            if len(batch_obs) > batch_size:
-                batch += 1
+            logging.debug("\n---\nEpoch: {}, TotalEpisode: {} \nEpisodeReturn: {} \nAveReturn: {} \n".format(epoch, episode, ep_rets[-1], ave_rets[-1]))
+            obs, done, rew = env.reset(), False, []
+            step = 0
+            if len(buffer_acts) > buffer_size:
+                epoch += 1
                 break
-    # compute_loss_actor(actor_net, batch_obs, batch_logprobs, batch_acts, batch_advs)
     # update actor_net and critic_net
+    loss_actor_old, actor_info_old = compute_loss_actor(actor_net, buffer_obs, buffer_logprobs, buffer_acts, buffer_advs)
+    loss_critic_old = compute_loss_critic(critic_net, buffer_obs, buffer_rets)
+    # policy gradient
     for i in range(actor_train_iters):
-        loss_actor, grads_actor = grad_actor(actor_net, batch_obs, batch_logprobs, batch_acts, batch_advs)
+        loss_actor, grads_actor = grad_actor(actor_net, buffer_obs, buffer_logprobs, buffer_acts, buffer_advs)
         optimizer_actor.apply_gradients(zip(grads_actor, actor_net.trainable_variables))
+        loss_actor, actor_info = compute_loss_actor(actor_net, buffer_obs, buffer_logprobs, buffer_acts, buffer_advs)
+        kl = actor_info['kl']
+        if kl > 1.5 * target_kl: # if new policy going too far from the old one, cut off training early
+            logging.warning("Training early cut off at iter {} due to large KL-divergence!".format(i+1))
+            break
+    # fit value
     for i in range(critic_train_iters):
-        loss_critic, grads_critic = grad_critic(critic_net, batch_obs, batch_rets)
+        loss_critic, grads_critic = grad_critic(critic_net, buffer_obs, buffer_rets)
         optimizer_critic.apply_gradients(zip(grads_critic, critic_net.trainable_variables))
-    # log batch
-    logging.info("\n====\nbatch: {}, episode: {} \nloss_actor: {}, loss_critic: {} \nmean return: {} \n====\n".format(batch, episode, loss_actor, loss_critic, ave_rets[-1]))
+        loss_critic = compute_loss_critic(critic_net, buffer_obs, buffer_rets)
+    # log epoch
+    logging.info(
+        "\n================================================================\nEpoch: {} \nLossPiOld: {}, LossPiUpdated: {} \nKLDivergence: {} \nEntropy: {} \nLossVOld: {}, LossVUpdated: {} \nAveEpReturn: {} \nTime: {} \n================================================================\n".format(
+            epoch,
+            loss_actor_old,
+            loss_actor,
+            actor_info['kl'],
+            actor_info['entropy'],
+            loss_critic_old,
+            loss_critic,
+            ave_rets[-1],
+            time.time()-start_time
+        )
+    )
     # save models
-    if not batch % save_freq or batch==num_batches:
-        actor_net_path = os.path.join(model_dir, 'actor_net', str(batch)+'.h5')
-        critic_net_path = os.path.join(model_dir, 'critic_net', str(batch)+'.h5')
+    if not epoch % save_freq or epoch==num_epochs:
+        actor_net_path = os.path.join(model_dir, 'actor_net', str(epoch)+'.h5')
+        critic_net_path = os.path.join(model_dir, 'critic_net', str(epoch)+'.h5')
         if not os.path.exists(os.path.dirname(actor_net_path)):
             os.makedirs(os.path.dirname(actor_net_path))
         if not os.path.exists(os.path.dirname(critic_net_path)):
             os.makedirs(os.path.dirname(critic_net_path))
-        # save model
         actor_net.save(actor_net_path)
         critic_net.save(critic_net_path)
-        logging.debug("models saved at {}".format(model_dir))
+        logging.info("\n$$$$$$$$$$$$$$$$\nmodels saved at {}\n$$$$$$$$$$$$$$$$\n".format(model_dir))
 
 # plot returns
 fig, ax = plt.subplots(figsize=(8, 6))
