@@ -6,7 +6,7 @@ import time
 import matplotlib.pyplot as plt
 
 import tensorflow as tf
-restrict GPU and memory growth
+# restrict GPU and memory growth
 gpus = tf.config.experimental.list_physical_devices('GPU')
 if gpus:
     try:
@@ -18,7 +18,7 @@ if gpus:
         print(e)
     # Restrict TensorFlow to only use the first GPU
     try:
-        tf.config.experimental.set_visible_devices(gpus[1], 'GPU')
+        tf.config.experimental.set_visible_devices(gpus[0], 'GPU')
         logical_gpus = tf.config.experimental.list_logical_devices('GPU')
         print(len(gpus), "Physical GPUs,", len(logical_gpus), "Logical GPU")
     except RuntimeError as e:
@@ -26,7 +26,7 @@ if gpus:
         print(e)
 
 import logging
-logging.basicConfig(format='%(asctime)s %(message)s',level=logging.DEBUG)
+logging.basicConfig(format='%(asctime)s %(message)s',level=logging.INFO)
 
 
 # Create LunarLander env
@@ -66,22 +66,28 @@ def compute_loss_actor(actor_net, buffer_obs, buffer_logprobs, buffer_acts, buff
     # print("tensor_acts: {}".format(tensor_acts))
     # print("tensor_advs: {}".format(tensor_advs))
     logits = actor_net(tensor_obs)
-    logprobs = tf.nn.log_softmax(logits)
+    probs = tf.nn.softmax(logits)
+    logprobs = tf.math.log(probs)
+    # logprobs = tf.nn.log_softmax(logits)
     # print("acts log probs: {}".format(logprobs))
     acts_onehot = tf.one_hot(tensor_acts, depth=env.action_space.n)
     logpis = tf.math.multiply(logprobs, acts_onehot)
     tensor_logpis = tf.math.reduce_sum(logpis, axis=1)
     # print("log pi: {}".format(tensor_logpis))
-    obj = tf.multiply(tensor_logpis, tensor_advs)
+    obj = tf.math.multiply(tensor_logpis, tensor_advs)
     # print("objective: {}".format(obj))
     loss_actor = -tf.math.reduce_mean(obj)
     # print("loss_pi: {}".format(loss_actor))
-
-    return loss_actor
+    # compute KL-divergence and Entropy
+    logprobs_old = tf.convert_to_tensor(buffer_logprobs)
+    kld_approx = tf.math.reduce_mean(logprobs_old - logprobs)
+    entropy = tf.math.reduce_sum(tf.math.multiply(-probs, logprobs))
+    actor_info = dict(kl=kld_approx, entropy=entropy)
+    return loss_actor, actor_info
 
 def grad_actor(actor_net, buffer_obs, buffer_logprobs, buffer_acts, buffer_advs):
     with tf.GradientTape() as tape:
-        loss_actor = compute_loss_actor(actor_net, buffer_obs, buffer_logprobs, buffer_acts, buffer_advs)
+        loss_actor, _ = compute_loss_actor(actor_net, buffer_obs, buffer_logprobs, buffer_acts, buffer_advs)
 
     return loss_actor, tape.gradient(loss_actor, actor_net.trainable_variables)
 
@@ -110,11 +116,10 @@ def reward_to_go(rews, gamma):
     return rtgs
 
 
-
 # params
 model_dir = './training_models/actor-critic'
 save_freq = 100
-num_epochs = 500
+num_epochs = 2000
 buffer_size = 4096
 lr_actor = 3e-4
 lr_critic = 1e-3
@@ -136,7 +141,7 @@ for e in range(num_epochs):
     buffer_obs = []
     buffer_acts = []
     buffer_advs = []
-    buffer_rews = [] # discounted reward to go
+    buffer_rews = [] 
     buffer_rets = [] # discounted reward to go
     buffer_vals = []
     buffer_logprobs = []
@@ -156,7 +161,7 @@ for e in range(num_epochs):
         buffer_rews.append(rew)
         buffer_vals.append(np.squeeze(val.numpy()))
         buffer_logprobs.append(np.squeeze(logprob.numpy()))
-        logging.debug("\n-\nepoch: {}, episode: {}, step: {}, epoch length: {} \nobs: {} \naction: {} \nnext obs: {}".format(epoch+1, episode+1, step+1, len(buffer_obs), obs, action, next_obs))
+        logging.debug("\n-\nepoch: {}, episode: {}, step: {}, epoch length: {} \nobs: {} \naction: {} \nnext obs: {}".format(epoch+1, episode+1, step+1, len(buffer_obs), obs, act, next_obs))
         obs = next_obs.copy()
         step += 1
         if done:
@@ -181,22 +186,24 @@ for e in range(num_epochs):
             if len(buffer_obs) > buffer_size:
                 epoch += 1
                 break
-    loss_pi_old = compute_loss_actor(actor_net, buffer_obs, buffer_logprobs, buffer_acts, buffer_advs)
+    loss_pi_old, actor_info_old = compute_loss_actor(actor_net, buffer_obs, buffer_logprobs, buffer_acts, buffer_advs)
     loss_v_old = compute_loss_critic(critic_net, buffer_obs, buffer_rets)
     # run policy gradient
     loss_actor, grads_actor = grad_actor(actor_net, buffer_obs, buffer_logprobs, buffer_acts, buffer_advs)
     optimizer_actor.apply_gradients(zip(grads_actor, actor_net.trainable_variables))
-    loss_actor = compute_loss_actor(actor_net, buffer_obs, buffer_logprobs, buffer_acts, buffer_advs)
+    loss_actor, actor_info = compute_loss_actor(actor_net, buffer_obs, buffer_logprobs, buffer_acts, buffer_advs)
     # fit value
     for i in range(val_train_iters):
         loss_critic, grads_critic = grad_critic(critic_net, buffer_obs, buffer_rets)
         optimizer_critic.apply_gradients(zip(grads_critic, critic_net.trainable_variables))
 #
     logging.info(
-        "\n================================================================\nEpoch: {} \nLossPiOld: {}, LossPiUpdated: {} \nLossVOld: {}, LossVUpdated: {} \nAveEpReturn: {} \nTime: {} \n================================================================\n".format(
+        "\n================================================================\nEpoch: {} \nLossPiOld: {}, LossPiUpdated: {} \nKLDivergence: {} \nEntropy: {} \nLossVOld: {}, LossVUpdated: {} \nAveEpReturn: {} \nTime: {} \n================================================================\n".format(
             epoch,
             loss_pi_old,
             loss_actor,
+            actor_info['kl'],
+            actor_info['entropy'],
             loss_v_old,
             loss_critic,
             ave_rets[-1],
@@ -205,8 +212,8 @@ for e in range(num_epochs):
     )
     # save models
     if not epoch % save_freq or epoch==num_epochs:
-        actor_net_path = os.path.join(model_dir, 'actor_net', str(batch)+'.h5')
-        critic_net_path = os.path.join(model_dir, 'critic_net', str(batch)+'.h5')
+        actor_net_path = os.path.join(model_dir, 'actor_net', str(epoch)+'.h5')
+        critic_net_path = os.path.join(model_dir, 'critic_net', str(epoch)+'.h5')
         if not os.path.exists(os.path.dirname(actor_net_path)):
             os.makedirs(os.path.dirname(actor_net_path))
         if not os.path.exists(os.path.dirname(critic_net_path)):
