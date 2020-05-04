@@ -77,7 +77,7 @@ def compute_loss_actor(actor_net, buffer_obs, buffer_logprobs, buffer_acts, buff
     obj = tf.math.multiply(tensor_logpis, tensor_advs)
     # print("objective: {}".format(obj))
     loss_actor = -tf.math.reduce_mean(obj)
-    # print("loss_pi: {}".format(loss_actor))
+    print("loss_pi: {}".format(loss_actor))
     # compute KL-divergence and Entropy
     logprobs_old = tf.convert_to_tensor(buffer_logprobs)
     kld_approx = tf.math.reduce_mean(logprobs_old - logprobs)
@@ -96,7 +96,7 @@ def compute_loss_critic(critic_net, buffer_obs, buffer_rets):
     vals_pred = tf.squeeze(critic_net(tf.convert_to_tensor(buffer_obs)))
     vals_target = tf.convert_to_tensor(buffer_rets)
     loss_critic = tf.keras.losses.MSE(vals_target, vals_pred)
-    # print(loss_critic)
+    print("loss_v: {}".format(loss_critic))
 
     return loss_critic
 
@@ -130,8 +130,7 @@ val_train_iters = 80
 # Create Optimizers
 optimizer_actor = tf.keras.optimizers.Adam(learning_rate=lr_actor)
 optimizer_critic = tf.keras.optimizers.Adam(learning_rate=lr_critic)
-
-#
+# prepare for train
 obs, done = env.reset(), False
 ep_rets, ave_rets = [], []
 epoch = 0
@@ -148,9 +147,9 @@ for e in range(num_epochs):
     buffer_logprobs = []
     while True:
         # env.render()
-        val = critic_net(obs.reshape(1,-1))
+        val = tf.stop_gradient(critic_net(obs.reshape(1,-1)))
         # logging.debug("value: {}".format(val))
-        logprob = tf.nn.log_softmax(actor_net(obs.reshape(1,-1)))
+        logprob = tf.stop_gradient(tf.nn.log_softmax(actor_net(obs.reshape(1,-1))))
         # logging.debug("action log probility: {}".format(logprob))
         act = np.squeeze(tf.random.categorical(logits=logprob, num_samples=1)) # squeeze (1,1) to (1,)
         # logging.debug("sampled action: {}".format(act))

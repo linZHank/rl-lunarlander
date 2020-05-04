@@ -18,7 +18,7 @@ if gpus:
         print(e)
     # Restrict TensorFlow to only use the first GPU
     try:
-        tf.config.experimental.set_visible_devices(gpus[1], 'GPU')
+        tf.config.experimental.set_visible_devices(gpus[0], 'GPU')
         logical_gpus = tf.config.experimental.list_logical_devices('GPU')
         print(len(gpus), "Physical GPUs,", len(logical_gpus), "Logical GPU")
     except RuntimeError as e:
@@ -36,8 +36,8 @@ env = gym.make('LunarLander-v2')
 actor_net = tf.keras.Sequential(
     [
         tf.keras.layers.InputLayer(input_shape=env.observation_space.shape),
-        tf.keras.layers.Dense(32, activation='tanh'),
-        tf.keras.layers.Dense(32, activation='tanh'),
+        tf.keras.layers.Dense(64, activation='tanh'),
+        tf.keras.layers.Dense(64, activation='tanh'),
         tf.keras.layers.Dense(env.action_space.n)
     ]
 )
@@ -47,8 +47,8 @@ actor_net.summary()
 critic_net = tf.keras.Sequential(
     [
         tf.keras.layers.InputLayer(input_shape=env.observation_space.shape),
-        tf.keras.layers.Dense(32, activation='relu'),
-        tf.keras.layers.Dense(32, activation='relu'),
+        tf.keras.layers.Dense(64, activation='tanh'),
+        tf.keras.layers.Dense(64, activation='tanh'),
         tf.keras.layers.Dense(1)
     ]
 )
@@ -123,7 +123,7 @@ model_dir = './training_models/ppo'
 save_freq = 100
 num_epochs = 1000
 buffer_size = 4096
-lr_actor = 3e-4
+lr_actor = 1e-4
 lr_critic = 1e-3
 gamma = 0.999
 lam = 0.97
@@ -150,8 +150,8 @@ for s in range(num_epochs):
     buffer_logprobs = []
     while True:
         # env.render()
-        val = critic_net(obs.reshape(1,-1))
-        logprob = tf.nn.log_softmax(actor_net(obs.reshape(1,-1))) # shape=(1, action_space.n)
+        val = tf.stop_gradient(critic_net(obs.reshape(1,-1)))
+        logprob = tf.stop_gradient(tf.nn.log_softmax(actor_net(obs.reshape(1,-1)))) # shape=(1, action_space.n)
         # print(logprob) # debug
         act = np.squeeze(tf.random.categorical(logits=logprob, num_samples=1)) # squeeze (1,1) to (1,)
         # print(action) # debug

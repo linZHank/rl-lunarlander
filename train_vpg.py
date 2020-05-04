@@ -1,6 +1,7 @@
 import sys
 import os
 import numpy as np
+import time
 import gym
 import matplotlib.pyplot as plt
 
@@ -25,122 +26,132 @@ if gpus:
         print(e)
 
 import logging
-logging.basicConfig(format='%(asctime)s %(message)s',level=logging.DEBUG)
+logging.basicConfig(format='%(asctime)s %(message)s',level=logging.INFO)
 
 
 # create LunarLander env
 env = gym.make('LunarLander-v2')
 
 # Create Policy Network
-policy_net = tf.keras.Sequential(
+actor_net = tf.keras.Sequential(
     [
         tf.keras.layers.InputLayer(input_shape=env.observation_space.shape),
-        tf.keras.layers.Dense(128, activation='relu'),
-        tf.keras.layers.Dense(64, activation='relu'),
+        tf.keras.layers.Dense(32, activation='tanh'),
+        tf.keras.layers.Dense(32, activation='tanh'),
         tf.keras.layers.Dense(env.action_space.n, activation='softmax')
     ]
 )
-policy_net.summary()
+actor_net.summary()
 
-# Create an Optimizer
-optimizer = tf.keras.optimizers.Adam(learning_rate=0.0001)
+def compute_loss_actor(actor_net, buffer_obs, buffer_logprobs, buffer_acts, buffer_rets):
+    tensor_obs = tf.convert_to_tensor(buffer_obs)
+    # print("obs: {}".format(tensor_obs))
+    tensor_acts = tf.convert_to_tensor(buffer_acts)
+    # print("acts: {}".format(tensor_acts))
+    tensor_rets = tf.cast(tf.convert_to_tensor(buffer_rets), tf.float32)
+    # print("rets: {}".format(tensor_rets))
+    pis = actor_net(tensor_obs)
+    logprobs = tf.math.log(pis)
+    acts_onehot = tf.one_hot(tensor_acts, depth=env.action_space.n)
+    logpis = tf.math.multiply(logprobs, acts_onehot)
+    # print("logpis: {}".format(logpis))
+    sum_logpis = tf.math.reduce_sum(logpis, axis=1)
+    # print("sum_logpis: {}".format(sum_logpis))
+    obj = tf.math.multiply(sum_logpis, tensor_rets)
+    loss_actor = -tf.math.reduce_mean(obj)
+    # compute KL-divergence and Entropy
+    logprobs_old = tf.convert_to_tensor(buffer_logprobs)
+    kld_approx = tf.math.reduce_mean(logprobs_old - logprobs)
+    entropy = tf.math.reduce_sum(tf.math.multiply(-pis, logprobs))
+    actor_info = dict(kl=kld_approx, entropy=entropy)
 
-def grad(policy_net, batch_obs, batch_acts, batch_rets):
+    return loss_actor, actor_info
+
+def grad_actor(actor_net, buffer_obs, buffer_logprobs, buffer_acts, buffer_rets):
     with tf.GradientTape() as tape:
-        batch_prob_acts = policy_net(tf.convert_to_tensor(batch_obs))
-        batch_acts_onehot = tf.one_hot(tf.convert_to_tensor(batch_acts), depth=env.action_space.n)
-        batch_pis = tf.math.multiply(batch_prob_acts, batch_acts_onehot)
-        batch_reduce_pis = tf.math.reduce_sum(batch_pis, axis=1)
-        batch_logpis = tf.math.log(batch_reduce_pis)
-        batch_weighted_logpis = tf.math.multiply(batch_logpis, tf.convert_to_tensor(batch_rets))
-        pg_loss = -tf.math.reduce_mean(batch_weighted_logpis)
+        loss_actor, _ = compute_loss_actor(actor_net, buffer_obs, buffer_logprobs, buffer_acts, buffer_rets)
 
-    return pg_loss, tape.gradient(pg_loss, policy_net.trainable_variables)
+    return loss_actor, tape.gradient(loss_actor, actor_net.trainable_variables)
 
-def reward_to_go(rews):
+def reward_to_go(rews, gamma):
+    """
+    discount considered
+    """
     n = len(rews)
     rtgs = np.zeros_like(rews)
     for i in reversed(range(n)):
-        rtgs[i] = rews[i] + (rtgs[i+1] if i+1 < n else 0)
+        rtgs[i] = rews[i] + (gamma*rtgs[i+1] if i+1 < n else 0)
     return rtgs
 
 
-################################### Test grad ###################################
-# obs = env.reset()
-# batch_obs = []
-# batch_acts = []
-# batch_rets = []
-# ep_rewards = []
-# for _ in range(16):
-#     prob_acts = policy_net(obs.reshape(1,-1))
-#     action = np.squeeze(tf.random.categorical(logits=prob_acts, num_samples=1))
-#     obs, rew, done, _ = env.step(action)
-#     batch_obs.append(obs.copy())
-#     batch_acts.append(action)
-#     ep_rewards.append(np.float32(rew))
-#     if done:
-#         break
-# ep_ret, ep_len = np.sum(ep_rewards), len(ep_rewards)
-# batch_rets += [ep_ret]*ep_len
-# #
-# batch_prob_acts = policy_net(tf.convert_to_tensor(batch_obs))
-# # print(batch_prob_acts) # debug
-# batch_acts_onehot = tf.one_hot(tf.convert_to_tensor(batch_acts), depth=env.action_space.n)
-# # print(batch_acts_onehot) # debug
-# batch_pis = tf.math.multiply(batch_prob_acts, batch_acts_onehot)
-# # print(batch_pis) # debug
-# batch_reduce_pis = tf.math.reduce_sum(batch_pis, axis=1)
-# # print(batch_reduce_pis) # debug
-# batch_logpis = tf.math.log(batch_reduce_pis)
-# # print(batch_logpis) # debug
-# # print(tf.convert_to_tensor(batch_rets)) # debug
-# loss = -tf.math.multiply(batch_logpis, tf.convert_to_tensor(batch_rets))
-# print(loss) # debug
-##################################################################################
-
-
 # params
-num_batches = 4096
-batch_size = 8192
-if __name__ == '__main__':
-    obs, done = env.reset(), False
-    ep_rets, ave_rets = [], []
-    batch = 0
-    episode = 0
-    step = 0
-    for s in range(num_batches):
-        batch_obs = []
-        batch_acts = []
-        batch_rtgs = []
-        rewards = []
-        while True:
-            # env.render()
-            prob_a = policy_net(obs.reshape(1,-1))
-            # print(prob_a) # debug
-            action = np.squeeze(tf.random.categorical(logits=prob_a, num_samples=1)) # squeeze (1,1) to (1,)
-            # print(action) # debug
-            obs, rew, done, info = env.step(action)
-            batch_obs.append(obs.copy())
-            batch_acts.append(action)
-            rewards.append(np.float32(rew))
-            step += 1
-            # print(obs, rew, done, info)
-            logging.debug("\n-\nbatch: {}, episode: {}, step: {}, batch length: {} \naction: {} \nobs: {}".format(batch+1, episode+1, step+1, len(batch_obs), action, obs))
-            if done:
-                episode += 1
-                step = 0
-                ep_rets.append(sum(rewards))
-                ave_rets.append(sum(ep_rets)/len(ep_rets))
-                batch_rtgs += list(reward_to_go(rewards))
-                logging.info("\n---\nbatch: {}, episode: {} \nreturn: {} \n".format(batch+1, episode+1, ep_rets[-1]))
-                obs, done, rewards = env.reset(), False, []
-                if len(batch_obs) > batch_size:
-                    batch += 1
-                    break
-        batch_rtgs = np.array(batch_rtgs)-np.sum(ep_rets)/(episode+1) # subtract baseline
-        pg_loss, grads = grad(policy_net, batch_obs, batch_acts, batch_rtgs)
-        optimizer.apply_gradients(zip(grads, policy_net.trainable_variables))
-        logging.info("\n====\nbatch: {}, episode: {} \nloss: {} \nmean return: {} \n====\n".format(batch, episode, pg_loss, np.mean(batch_rtgs)))
+model_dir = './training_models/actor-critic'
+save_freq = 100
+num_epochs = 200
+buffer_size = 4096
+lr_actor = 3e-4
+gamma = 0.999
+# Create Optimizers
+optimizer_actor = tf.keras.optimizers.Adam(learning_rate=lr_actor)
+# prepare for train
+obs, done = env.reset(), False
+ep_rets, ave_rets = [], []
+epoch = 0
+episode = 0
+step = 0
+start_time = time.time()
+for e in range(num_epochs):
+    buffer_obs = []
+    buffer_acts = []
+    buffer_advs = []
+    buffer_rews = []
+    buffer_rets = [] # discounted reward to go
+    buffer_logprobs = []
+    while True:
+        # env.render()
+        logprob = tf.stop_gradient(tf.nn.log_softmax(actor_net(obs.reshape(1,-1))))
+        # logging.debug("action log probility: {}".format(logprob))
+        act = np.squeeze(tf.random.categorical(logits=logprob, num_samples=1)) # squeeze (1,1) to (1,)
+        # logging.debug("sampled action: {}".format(act))
+        next_obs, rew, done, info = env.step(act)
+        # store experience into buffer
+        buffer_obs.append(obs.copy())
+        buffer_acts.append(act)
+        buffer_rews.append(rew)
+        buffer_logprobs.append(np.squeeze(logprob.numpy()))
+        logging.debug("\n-\nepoch: {}, episode: {}, step: {}, epoch length: {} \nobs: {} \naction: {} \nnext obs: {}".format(epoch+1, episode+1, step+1, len(buffer_obs), obs, act, next_obs))
+        obs = next_obs.copy()
+        step += 1
+        if done:
+            episode += 1
+            # compute discounted reward to go
+            rews = buffer_rews[-step:] # rewards in last episode
+            rtgs = reward_to_go(rews, gamma)
+            buffer_rets += list(rtgs)
+            ep_rets.append(sum(rews))
+            ave_rets.append(sum(ep_rets)/len(ep_rets))
+            logging.debug("\n---\nEpoch: {}, TotalEpisode: {} \nEpisodeReturn: {} \nAveReturn: {} \n".format(epoch, episode, ep_rets[-1], ave_rets[-1]))
+            obs, done, rew = env.reset(), False, []
+            step = 0
+            if len(buffer_obs) > buffer_size:
+                epoch += 1
+                break
+    # run policy gradient
+    loss_actor_old, actor_info_old = compute_loss_actor(actor_net, buffer_obs, buffer_logprobs, buffer_acts, buffer_rets)
+    loss_actor, grads_actor = grad_actor(actor_net, buffer_obs, buffer_logprobs, buffer_acts, buffer_rets)
+    optimizer_actor.apply_gradients(zip(grads_actor, actor_net.trainable_variables))
+    loss_actor, actor_info = compute_loss_actor(actor_net, buffer_obs, buffer_logprobs, buffer_acts, buffer_rets)
+    logging.info(
+        "\n================================================================\nEpoch: {} \nLossPiOld: {}, LossPiUpdated: {} \nKLDivergence: {} \nEntropy: {} \nAveEpReturn: {} \nTime: {} \n================================================================\n".format(
+            epoch,
+            loss_actor_old,
+            loss_actor,
+            actor_info['kl'],
+            actor_info['entropy'],
+            ave_rets[-1],
+            time.time()-start_time
+        )
+    )
 
 fig, ax = plt.subplots(figsize=(8, 6))
 fig.suptitle('Averaged Returns')
