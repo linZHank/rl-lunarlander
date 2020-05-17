@@ -43,6 +43,7 @@ logging.basicConfig(format='%(asctime)s %(message)s',level=logging.DEBUG)
 instantiate env
 """
 env = gym.make('LunarLanderContinuous-v2')
+# env = gym.make('Pendulum-v0')
 ################################################################
 
 
@@ -113,7 +114,7 @@ critic_net_1 = tf.keras.Sequential(
         tf.keras.layers.InputLayer(input_shape=(env.observation_space.shape[0]+env.action_space.shape[0])),
         tf.keras.layers.Dense(256, activation='relu'),
         tf.keras.layers.Dense(256, activation='relu'),
-        tf.keras.layers.Dense(1, activation='linear')
+        tf.keras.layers.Dense(1)
     ]
 )
 critic_net_1_targ = tf.keras.models.clone_model(critic_net_1)
@@ -123,7 +124,7 @@ critic_net_2 = tf.keras.Sequential(
         tf.keras.layers.InputLayer(input_shape=(env.observation_space.shape[0]+env.action_space.shape[0])),
         tf.keras.layers.Dense(256, activation='relu'),
         tf.keras.layers.Dense(256, activation='relu'),
-        tf.keras.layers.Dense(1, activation='linear')
+        tf.keras.layers.Dense(1)
     ]
 )
 critic_net_2_targ = tf.keras.models.clone_model(critic_net_2)
@@ -171,52 +172,87 @@ class ReplayBuffer:
 """
 Compute loss and gradients
 """
-def compute_q_loss(act_limit, target_noise, noise_clip, batch):
-    obs_batch, act_batch, rew_batch, next_obs_batch, done_batch = batch['obs'], batch['act'], batch['rew'], batch['next_obs'], batch['done']
-    q1 = critic_net_1(tf.concat([obs_batch, act_batch], axis=1))
-    q2 = critic_net_2(tf.concat([obs_batch, act_batch], axis=1))
-    pi_targ = tf.stop_gradient(tf.math.multiply(act_limit, actor_net_targ(obs_batch)))
-    # print("pi_targ: {}".format(pi_targ))
-    # target policy smoothing
-    epsilon = tf.stop_gradient(tf.random.normal(pi_targ.shape)*target_noise)
-    epsilon = tf.clip_by_value(epsilon, -noise_clip, noise_clip)
-    next_act = pi_targ + epsilon
-    next_act = tf.clip_by_value(next_act, -act_limit, act_limit)
-    # targe Q-values
-    next_q1 = tf.stop_gradient(critic_net_1_targ(tf.concat([next_obs_batch, next_act], axis=1)))
-    next_q2 = tf.stop_gradient(critic_net_2_targ(tf.concat([next_obs_batch, next_act], axis=1)))
-    pessimistic_next_q = tf.math.minimum(next_q1, next_q2)
-    q_targ = rew_batch + gamma*(1 - done_batch)*pessimistic_next_q
-    # MSE loss
-    loss_q1 = tf.keras.losses.MSE(q_targ, q1)
-    loss_q2 = tf.keras.losses.MSE(q_targ, q2)
-    loss_Q = loss_q1 + loss_q2
+# def compute_q_loss(act_limit, target_noise, noise_clip, batch):
+#     obs_batch, act_batch, rew_batch, next_obs_batch, done_batch = batch['obs'], batch['act'], batch['rew'], batch['next_obs'], batch['done']
+#     q1 = critic_net_1(tf.concat([obs_batch, act_batch], axis=1))
+#     q2 = critic_net_2(tf.concat([obs_batch, act_batch], axis=1))
+#     pi_targ = tf.stop_gradient(tf.math.multiply(act_limit, actor_net_targ(obs_batch)))
+#     # print("pi_targ: {}".format(pi_targ))
+#     # target policy smoothing
+#     epsilon = tf.stop_gradient(tf.random.normal(pi_targ.shape)*target_noise)
+#     epsilon = tf.clip_by_value(epsilon, -noise_clip, noise_clip)
+#     next_act = pi_targ + epsilon
+#     next_act = tf.clip_by_value(next_act, -act_limit, act_limit)
+#     # targe Q-values
+#     next_q1 = tf.stop_gradient(critic_net_1_targ(tf.concat([next_obs_batch, next_act], axis=1)))
+#     next_q2 = tf.stop_gradient(critic_net_2_targ(tf.concat([next_obs_batch, next_act], axis=1)))
+#     pessimistic_next_q = tf.math.minimum(next_q1, next_q2)
+#     q_targ = rew_batch + gamma*(1 - done_batch)*pessimistic_next_q
+#     # MSE loss
+#     loss_q1 = tf.keras.losses.MSE(q_targ, q1)
+#     loss_q2 = tf.keras.losses.MSE(q_targ, q2)
+#     loss_Q = loss_q1 + loss_q2
+#
+#     return loss_Q
 
-    return loss_Q
+# def compute_q1_grads(act_limit, target_noise, noise_clip, batch):
+#     with tf.GradientTape() as tape:
+#         loss_Q = compute_q_loss(act_limit, target_noise, noise_clip, batch)
+#     grads_q1 = tape.gradient(loss_Q, critic_net_1.trainable_variables)
+#     q1_optimizer.apply_gradients(zip(grads_q1, critic_net_1.trainable_variables))
+#
+# def compute_q2_grads(act_limit, target_noise, noise_clip, batch):
+#     with tf.GradientTape() as tape:
+#         loss_Q = compute_q_loss(act_limit, target_noise, noise_clip, batch)
+#     grads_q2 = tape.gradient(loss_Q, critic_net_2.trainable_variables)
+#     q2_optimizer.apply_gradients(zip(grads_q2, critic_net_2.trainable_variables))
 
-def compute_q1_grads(act_limit, target_noise, noise_clip, batch):
-    with tf.GradientTape() as tape:
-        loss_Q = compute_q_loss(act_limit, target_noise, noise_clip, batch)
-    grads_q1 = tape.gradient(loss_Q, critic_net_1.trainable_variables)
-    q1_optimizer.apply_gradients(zip(grads_q1, critic_net_1.trainable_variables))
+def compute_q_grads(act_limit, target_noise, noise_clip, batch):
+    with tf.GradientTape(watch_accessed_variables=False) as tape:
+        # specify gradients of interested variables
+        tape.watch(critic_net_1.trainable_variables+critic_net_2.trainable_variables)
+        # read in data from sampled batch
+        obs_batch, act_batch, rew_batch, next_obs_batch, done_batch = batch['obs'], batch['act'], batch['rew'], batch['next_obs'], batch['done']
+        q1 = critic_net_1(tf.concat([obs_batch, act_batch], axis=1))
+        q2 = critic_net_2(tf.concat([obs_batch, act_batch], axis=1))
+        # compute target q's without recording gradients
+        with tape.stop_recording():
+            pi_targ = tf.math.multiply(act_limit, actor_net_targ(obs_batch))
+            # print("pi_targ: {}".format(pi_targ))
+            # target policy smoothing
+            epsilon = tf.random.normal(pi_targ.shape)*target_noise
+            epsilon = tf.clip_by_value(epsilon, -noise_clip, noise_clip)
+            next_act = pi_targ + epsilon
+            next_act = tf.clip_by_value(next_act, -act_limit, act_limit)
+            # targe Q-values
+            next_q1 = critic_net_1_targ(tf.concat([next_obs_batch, next_act], axis=1))
+            next_q2 = critic_net_2_targ(tf.concat([next_obs_batch, next_act], axis=1))
+            pessimistic_next_q = tf.math.minimum(next_q1, next_q2)
+            q_targ = rew_batch + gamma*(1 - done_batch)*pessimistic_next_q
+        # MSE loss
+        loss_q1 = tf.keras.losses.MSE(q_targ, q1)
+        loss_q2 = tf.keras.losses.MSE(q_targ, q2)
+        loss_Q = loss_q1 + loss_q2
+        # loss_Q = compute_q_loss(act_limit, target_noise, noise_clip, batch)
+    grads_q = tape.gradient(loss_Q, critic_net_1.trainable_variables+critic_net_2.trainable_variables)
+    q_optimizer.apply_gradients(zip(grads_q, critic_net_1.trainable_variables+critic_net_2.trainable_variables))
 
-def compute_q2_grads(act_limit, target_noise, noise_clip, batch):
-    with tf.GradientTape() as tape:
-        loss_Q = compute_q_loss(act_limit, target_noise, noise_clip, batch)
-    grads_q2 = tape.gradient(loss_Q, critic_net_2.trainable_variables)
-    q2_optimizer.apply_gradients(zip(grads_q2, critic_net_2.trainable_variables))
-
-def compute_pi_loss(act_limit, batch):
-    obs_batch = batch['obs']
-    pi = tf.math.multiply(act_limit, actor_net(obs_batch))
-    objective_pi = critic_net_1(tf.concat([obs_batch, pi], axis=1))
-    loss_pi = -tf.math.reduce_mean(objective_pi)
-
-    return loss_pi
+# def compute_pi_loss(act_limit, batch):
+#     obs_batch = batch['obs']
+#     pi = tf.math.multiply(act_limit, actor_net(obs_batch))
+#     objective_pi = critic_net_1(tf.concat([obs_batch, pi], axis=1))
+#     loss_pi = -tf.math.reduce_mean(objective_pi)
+#
+#     return loss_pi
 
 def compute_pi_grads(act_limit, batch):
     with tf.GradientTape() as tape:
-        loss_pi = compute_pi_loss(act_limit, batch)
+        tape.watch(actor_net.trainable_variables)
+        obs_batch = batch['obs']
+        pi = tf.math.multiply(act_limit, actor_net(obs_batch))
+        objective_pi = critic_net_1(tf.concat([obs_batch, pi], axis=1))
+        loss_pi = -tf.math.reduce_mean(objective_pi)
+        # loss_pi = compute_pi_loss(act_limit, batch)
     grads_pi = tape.gradient(loss_pi, actor_net.trainable_variables)
     actor_optimizer.apply_gradients(zip(grads_pi, actor_net.trainable_variables))
 
@@ -294,7 +330,7 @@ epochs=100
 replay_size=int(1e6)
 gamma=0.99
 polyak=0.995
-pi_lr=1e-3
+pi_lr=3e-4
 q_lr=1e-3
 batch_size=100
 warmup_steps=10000
@@ -312,8 +348,9 @@ act_dim = env.action_space.shape[0]
 act_limit = env.action_space.high
 replay_buffer = ReplayBuffer(obs_dim=obs_dim, act_dim=act_dim, size=replay_size)
 # Create Optimizer
-q1_optimizer = tf.keras.optimizers.Adam(learning_rate=q_lr)
-q2_optimizer = tf.keras.optimizers.Adam(learning_rate=q_lr)
+# q1_optimizer = tf.keras.optimizers.Adam(learning_rate=q_lr)
+# q2_optimizer = tf.keras.optimizers.Adam(learning_rate=q_lr)
+q_optimizer = tf.keras.optimizers.Adam(learning_rate=q_lr)
 actor_optimizer = tf.keras.optimizers.Adam(learning_rate=pi_lr)
 model_dir = './training_models/ddpg/'+datetime.now().strftime("%Y-%m-%d-%H-%M")
 if not os.path.exists(model_dir):
@@ -365,8 +402,9 @@ for t in range(total_steps):
             # print("loss_Q: {}".format(loss_Q))
             # loss_pi = compute_pi_loss(act_limit, batch)
             # print("loss_pi: {}".format(loss_pi))
-            compute_q1_grads(act_limit, target_noise, noise_clip, batch)
-            compute_q2_grads(act_limit, target_noise, noise_clip, batch)
+            # compute_q1_grads(act_limit, target_noise, noise_clip, batch)
+            # compute_q2_grads(act_limit, target_noise, noise_clip, batch)
+            compute_q_grads(act_limit, target_noise, noise_clip, batch)
             if not i%policy_delay:
                 compute_pi_grads(act_limit, batch)
                 # polyak averaging
