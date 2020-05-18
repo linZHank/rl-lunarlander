@@ -40,7 +40,7 @@ actor_net = tf.keras.Sequential(
         tf.keras.layers.InputLayer(input_shape=env.observation_space.shape),
         tf.keras.layers.Dense(256, activation='relu'),
         tf.keras.layers.Dense(256, activation='relu'),
-        tf.keras.layers.Dense(env.action_space.shape[0])
+        tf.keras.layers.Dense(env.action_space.shape[0], activation='tanh')
     ]
 )
 actor_net_stable = tf.keras.models.clone_model(actor_net)
@@ -91,7 +91,8 @@ def compute_grads_critic(critic_net, critic_net_stable, actor_net_stable, batch_
 
 def compute_loss_actor(actor_net, critic_net_stable, batch_reps):
     tensor_obs = tf.convert_to_tensor(batch_reps[0])
-    q_mu = critic_net_stable(tf.concat([tensor_obs, actor_net(tensor_obs)], axis=1))
+    a_preds = actor_net(tensor_obs)
+    q_mu = critic_net_stable(tf.concat([tensor_obs, a_preds], axis=1))
     # print("q_mu: {}".format(q_mu))
     loss_mu = -tf.math.reduce_mean(q_mu)
     print("loss_mu: {}".format(loss_mu))
@@ -128,8 +129,8 @@ gamma = 0.99
 polyak = 0.997
 warmup = 100
 buffer_size = 100000
-batch_size = 8192
-act_noise = 0.05
+batch_size = 4096
+act_noise = 0.1
 replay_buffer = []
 # train_loss = []
 step_counter = 0

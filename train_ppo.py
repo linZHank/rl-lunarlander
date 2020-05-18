@@ -30,7 +30,8 @@ logging.basicConfig(format='%(asctime)s %(message)s',level=logging.INFO)
 
 
 # Create LunarLander env
-env = gym.make('LunarLander-v2')
+# env = gym.make('LunarLander-v2')
+env = gym.make('CartPole-v1')
 
 # Create Policy Network
 actor_net = tf.keras.Sequential(
@@ -121,15 +122,15 @@ def reward_to_go(rews, gamma):
 # params
 model_dir = './training_models/ppo'
 save_freq = 100
-num_epochs = 1000
-buffer_size = 4096
-lr_actor = 1e-4
+num_epochs = 200 #1000
+buffer_size = 2048 #4096
+lr_actor = 3e-4
 lr_critic = 1e-3
-gamma = 0.999
-lam = 0.97
+gamma = 0.99
+lam = 0.95
 target_kl = 0.01
-actor_train_iters = 80
-critic_train_iters = 80
+actor_train_iters = 40 #80
+critic_train_iters = 40 #80
 # Create Optimizers
 optimizer_actor = tf.keras.optimizers.Adam(learning_rate=lr_actor)
 optimizer_critic = tf.keras.optimizers.Adam(learning_rate=lr_critic)
@@ -153,7 +154,7 @@ for s in range(num_epochs):
         val = tf.stop_gradient(critic_net(obs.reshape(1,-1)))
         logprob = tf.stop_gradient(tf.nn.log_softmax(actor_net(obs.reshape(1,-1)))) # shape=(1, action_space.n)
         # print(logprob) # debug
-        act = np.squeeze(tf.random.categorical(logits=logprob, num_samples=1)) # squeeze (1,1) to (1,)
+        act = tf.stop_gradient(np.squeeze(tf.random.categorical(logits=logprob, num_samples=1))).numpy() # squeeze (1,1) to (1,)
         # print(action) # debug
         next_obs, rew, done, info = env.step(act)
         # store experience into buffer
@@ -170,15 +171,24 @@ for s in range(num_epochs):
         if done:
             episode += 1
             # compute discounted reward to go
-            rews = buffer_rews[-step:] # rewards in last episode
+            # rews = buffer_rews[-step:] # rewards in last episode
+            # rtgs = reward_to_go(rews, gamma)
+            # # compute advantages
+            # vals = buffer_vals[-step:]
+            # nvals = vals[1:]+[0] # values of next states
+            # advs = [np.float32(rtgs[i]+gamma*lam*nvals[i]-vals[i]) for i in range(len(rews))]
+            #
+            rews = np.array(buffer_rews[-step:]) # rewards in last episode
             rtgs = reward_to_go(rews, gamma)
             # compute advantages
-            vals = buffer_vals[-step:]
-            nvals = vals[1:]+[0] # values of next states
-            advs = [np.float32(rtgs[i]+gamma*lam*nvals[i]-vals[i]) for i in range(len(rews))]
+            vals = np.array(buffer_vals[-step:])
+            nvals = np.zeros_like(vals)
+            nvals[:-1] = vals[1:] # values of next states
+            deltas = rews + gamma*nvals - vals
+            advs = np.float32(reward_to_go(deltas, gamma*lam))
             # store discounted returns and advantages
             buffer_rets += list(rtgs)
-            buffer_advs += advs
+            buffer_advs += list(advs)
             # sum episode
             ep_rets.append(sum(rews))
             ave_rets.append(sum(ep_rets)/len(ep_rets))
@@ -221,8 +231,8 @@ for s in range(num_epochs):
     )
     # save models
     if not epoch % save_freq or epoch==num_epochs:
-        actor_net_path = os.path.join(model_dir, 'actor_net', str(epoch)+'.h5')
-        critic_net_path = os.path.join(model_dir, 'critic_net', str(epoch)+'.h5')
+        actor_net_path = os.path.join(model_dir, env.spec.id, 'actor_net', str(epoch)+'.h5')
+        critic_net_path = os.path.join(model_dir, env.spec.id, 'critic_net', str(epoch)+'.h5')
         if not os.path.exists(os.path.dirname(actor_net_path)):
             os.makedirs(os.path.dirname(actor_net_path))
         if not os.path.exists(os.path.dirname(critic_net_path)):
@@ -230,6 +240,27 @@ for s in range(num_epochs):
         actor_net.save(actor_net_path)
         critic_net.save(critic_net_path)
         logging.info("\n$$$$$$$$$$$$$$$$\nmodels saved at {}\n$$$$$$$$$$$$$$$$\n".format(model_dir))
+
+# Test trained model
+input("Press ENTER to test lander...")
+num_episodes = 10
+num_steps = env.spec.max_episode_steps
+ep_rets, ave_rets = [], []
+for ep in range(num_episodes):
+    obs, done, rewards = env.reset(), False, []
+    for st in range(num_steps):
+        env.render()
+        logprob = tf.stop_gradient(tf.nn.log_softmax(actor_net(obs.reshape(1,-1)))) # shape=(1, action_space.n)
+        act = tf.stop_gradient(np.squeeze(tf.random.categorical(logits=logprob, num_samples=1))).numpy() # squeeze (1,1) to (1,)
+        next_obs, rew, done, info = env.step(act)
+        rewards.append(rew)
+        logging.info("\n-\nepisode: {}, step: {} \naction: {} \nobs: {}, \nreward: {}".format(ep+1, st+1, act, obs, rew))
+        obs = next_obs.copy()
+        if done:
+            ep_rets.append(sum(rewards))
+            ave_rets.append(sum(ep_rets)/len(ep_rets))
+            logging.info("\n---\nepisode: {} \nepisode return: {}, averaged return: {} \n---\n".format(ep+1, ep_rets[-1], ave_rets[-1]))
+            break
 
 # plot returns
 fig, ax = plt.subplots(figsize=(8, 6))
