@@ -16,7 +16,8 @@ logging.basicConfig(format='%(asctime)s %(message)s',level=logging.DEBUG)
 env = gym.make('LunarLanderContinuous-v2')
 
 # load model
-model_path = './training_models/ppo/LunarLanderContinuous-v2/models/199'
+# model_path = './training_models/ppo/LunarLanderContinuous-v2/models/199'
+model_path = './training_models/ppo/test/LunarLanderContinuous-v2/models/9'
 ac = tf.saved_model.load(model_path)
 # params
 num_episodes = 10
@@ -30,11 +31,8 @@ if __name__ == '__main__':
         obs, done, rewards = env.reset(), False, []
         for st in range(num_steps):
             env.render()
-            mu = tf.squeeze(ac.actor.mu_net(obs.reshape(1,-1)))
-            std = tf.math.exp(ac.actor.log_std)
-            act = tfd.Normal(mu, std).sample().numpy()
-            # act, _, _ = ac.step(obs.reshape(1,-1))
-            next_obs, rew, done, info = env.step(act)
+            act, _, _ = ac.step(obs.reshape(1,-1))
+            next_obs, rew, done, info = env.step(act.numpy())
             rewards.append(rew)
             # print("\n-\nepisode: {}, step: {} \naction: {} \nobs: {}, \nreward: {}".format(ep+1, st+1, act, obs, rew))
             obs = next_obs.copy()
@@ -43,10 +41,3 @@ if __name__ == '__main__':
                 ave_rets.append(sum(ep_rets)/len(ep_rets))
                 print("\n---\nepisode: {} \nepisode return: {}, averaged return: {} \n---\n".format(ep+1, ep_rets[-1], ave_rets[-1]))
                 break
-
-
-fig, ax = plt.subplots(figsize=(8, 6))
-ax.set_xlabel("Episode")
-ax.set_ylabel("Return")
-ax.plot(ep_rets)
-plt.show()

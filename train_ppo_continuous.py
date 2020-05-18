@@ -14,10 +14,6 @@ import tensorflow as tf
 print(tf.__version__)
 import tensorflow_probability as tfp
 tfd = tfp.distributions
-# # for the sake of debugging, import torch
-# import torch
-# import torch.nn as nn
-# from torch.distributions.normal import Normal
 ################################################################
 """
 Unnecessary initial settings
@@ -67,14 +63,6 @@ def mlp(sizes, activation, output_activation=None):
 
     return tf.keras.Model(inputs=inputs, outputs=outputs)
 
-# # debugging torch version mlp
-# def torch_mlp(sizes, activation, output_activation=nn.Identity):
-#     layers = []
-#     for j in range(len(sizes)-1):
-#         act = activation if j < len(sizes)-2 else output_activation
-#         layers += [nn.Linear(sizes[j], sizes[j+1]), act()]
-#     return nn.Sequential(*layers)
-
 class Actor(tf.Module):
     def _distribution(self, obs):
         raise NotImplementedError
@@ -122,6 +110,7 @@ class MLPActorCritic(tf.Module):
         self.actor = MLPGaussianActor(obs_dim=obs_dim, act_dim=act_dim, hidden_sizes=hidden_sizes, activation=activation)
         self.critic = MLPCritic(obs_dim=obs_dim, hidden_sizes=hidden_sizes, activation=activation)
 
+    @tf.function
     def step(self, obs):
         with tf.GradientTape() as t:
             with t.stop_recording():
@@ -130,8 +119,10 @@ class MLPActorCritic(tf.Module):
                 logp_a = self.actor._log_prob_from_distribution(pi_dist, a)
                 v = self.critic(obs)
 
-        return a.numpy(), v.numpy(), logp_a.numpy()
+        # return a.numpy(), v.numpy(), logp_a.numpy()
+        return a, v, logp_a
 
+    @tf.function
     def act(self, obs):
         return self.step(obs)[0]
 ################################################################
@@ -150,8 +141,8 @@ def compute_actor_gradients(data):
         ratio = tf.math.exp(logp - logp_old)
         clip_adv = tf.math.multiply(tf.clip_by_value(ratio, 1-clip_ratio, 1+clip_ratio), adv)
         ent = tf.math.reduce_sum(pi.entropy(), axis=-1)
-        loss = -tf.math.minimum(tf.math.multiply(ratio, adv), clip_adv) #+ .01*ent
-        loss_pi = tf.math.reduce_mean(loss)
+        loss = tf.math.minimum(tf.math.multiply(ratio, adv), clip_adv) - .01*ent
+        loss_pi = -tf.math.reduce_mean(loss)
         # useful info
         approx_kl = tf.math.reduce_mean(logp_old - logp, axis=-1)
         entropy = tf.math.reduce_mean(ent)
@@ -279,6 +270,9 @@ class PPOBuffer:
 """
 Main
 """
+# instantiate env
+env = gym.make('LunarLanderContinuous-v2')
+# env = gym.make('Pendulum-v0')
 # paramas
 steps_per_epoch=4000
 epochs=200
@@ -301,19 +295,21 @@ buffer = PPOBuffer(obs_dim, act_dim, steps_per_epoch, gamma, lam)
 actor_optimizer = tf.keras.optimizers.Adam(learning_rate=3e-4)
 critic_optimizer = tf.keras.optimizers.Adam(learning_rate=1e-4)
 # Prepare for interaction with environment
-model_dir = './training_models/ppo/'
+model_dir = './training_models/ppo'
 start_time = time.time()
 obs, ep_ret, ep_len = env.reset(), 0, 0
-episodes, total_steps, ave_rets = 0, 0, []
+episodes, total_steps = 0, 0
+stepwise_rewards, episodic_returns, averaged_returns = [], [], []
 # main loop
 for ep in range(epochs):
     for st in range(steps_per_epoch):
         act, val, logp = ac.step(obs.reshape(1,-1))
-        next_obs, rew, done, _ = env.step(act)
+        next_obs, rew, done, _ = env.step(act.numpy())
         ep_ret += rew
         ep_len += 1
+        stepwise_rewards.append(rew)
         total_steps += 1
-        buffer.store(obs, act, rew, val, logp)
+        buffer.store(obs, act.numpy(), rew, val.numpy(), logp.numpy())
         obs = next_obs # SUPER CRITICAL!!!
         # handle episode termination
         timeout = (ep_len==env.spec.max_episode_steps)
@@ -329,7 +325,8 @@ for ep in range(epochs):
             buffer.finish_path(val)
             if terminal:
                 episodes += 1
-                ave_rets.append(ep_ret/ep_len)
+                episodic_returns.append(ep_ret)
+                averaged_returns.append(sum(episodic_returns)/episodes)
                 print("\nTotalSteps: {} \nEpisode: {}, Step: {}, EpReturn: {}, EpLength: {}".format(total_steps, episodes, st+1, ep_ret, ep_len))
             obs, ep_ret, ep_len = env.reset(), 0, 0
     # Save model
@@ -341,9 +338,15 @@ for ep in range(epochs):
 
     # update actor-critic
     loss_pi, pi_info, loss_v = update(buffer)
-    print("\n================================================================\nEpoch: {} \nStep: {} \nAveReturn: {} \nLossPi: {} \nLossV: {} \nKLDivergence: {} \n Entropy: {} \nTimeElapsed: {}\n================================================================\n".format(ep+1, st+1, ave_rets[-1], loss_pi, loss_v, pi_info['kl'], pi_info['ent'], time.time()-start_time))
+    print("\n================================================================\nEpoch: {} \nStep: {} \nAveReturn: {} \nLossPi: {} \nLossV: {} \nKLDivergence: {} \n Entropy: {} \nTimeElapsed: {}\n================================================================\n".format(ep+1, st+1, averaged_returns[-1], loss_pi, loss_v, pi_info['kl'], pi_info['ent'], time.time()-start_time))
 ################################################################
 
+
+# plot returns
+fig, ax = plt.subplots(figsize=(8, 6))
+fig.suptitle('Averaged Returns')
+ax.plot(averaged_returns)
+plt.show()
 
 # Test trained model
 input("Press ENTER to test lander...")
@@ -355,7 +358,7 @@ for ep in range(num_episodes):
     for st in range(num_steps):
         env.render()
         act, _, _ = ac.step(obs.reshape(1,-1))
-        next_obs, rew, done, info = env.step(act)
+        next_obs, rew, done, info = env.step(act.numpy())
         rewards.append(rew)
         # print("\n-\nepisode: {}, step: {} \naction: {} \nobs: {}, \nreward: {}".format(ep+1, st+1, act, obs, rew))
         obs = next_obs.copy()
