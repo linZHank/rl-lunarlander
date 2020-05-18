@@ -148,10 +148,10 @@ def compute_actor_gradients(data):
         # print("pi: {} \nlogp: {}".format(pi, logp))
         ratio = tf.math.exp(logp - logp_old)
         clip_adv = tf.math.multiply(tf.clip_by_value(ratio, 1-clip_ratio, 1+clip_ratio), adv)
-        loss_pi = -tf.math.minimum(tf.math.multiply(ratio, adv), clip_adv)
+        ent = tf.math.reduce_mean(pi.entropy())
+        loss_pi = -tf.math.minimum(tf.math.multiply(ratio, adv), clip_adv) + .1*ent
         # useful info
         approx_kl = tf.math.reduce_mean(logp_old - logp, axis=-1)
-        ent = tf.math.reduce_mean(pi.entropy())
         pi_info = dict(kl=approx_kl, ent=ent)
     actor_grads = tape.gradient(loss_pi, ac.actor.trainable_variables)
     actor_optimizer.apply_gradients(zip(actor_grads, ac.actor.trainable_variables))
@@ -180,7 +180,6 @@ def update(buffer):
         loss_v = compute_critic_gradients(data)
 
     return loss_pi, pi_info, loss_v
-
 ################################################################
 
 
@@ -278,7 +277,7 @@ class PPOBuffer:
 Main
 """
 # paramas
-steps_per_epoch=4000
+steps_per_epoch=8000
 epochs=100
 gamma=0.99
 clip_ratio=0.2
