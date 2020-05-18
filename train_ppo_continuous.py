@@ -111,7 +111,8 @@ class MLPCritic(tf.Module):
     def __init__(self, obs_dim, hidden_sizes, activation):
         super().__init__()
         self.v_net = mlp([obs_dim] + list(hidden_sizes) + [1], activation)
-#
+
+    @tf.function
     def __call__(self, obs):
         return tf.squeeze(self.v_net(obs), axis=-1)
 
@@ -148,11 +149,13 @@ def compute_actor_gradients(data):
         # print("pi: {} \nlogp: {}".format(pi, logp))
         ratio = tf.math.exp(logp - logp_old)
         clip_adv = tf.math.multiply(tf.clip_by_value(ratio, 1-clip_ratio, 1+clip_ratio), adv)
-        ent = tf.math.reduce_mean(pi.entropy())
-        loss_pi = -tf.math.minimum(tf.math.multiply(ratio, adv), clip_adv) + .1*ent
+        ent = tf.math.reduce_sum(pi.entropy(), axis=-1)
+        loss = -tf.math.minimum(tf.math.multiply(ratio, adv), clip_adv) #+ .01*ent
+        loss_pi = tf.math.reduce_mean(loss)
         # useful info
         approx_kl = tf.math.reduce_mean(logp_old - logp, axis=-1)
-        pi_info = dict(kl=approx_kl, ent=ent)
+        entropy = tf.math.reduce_mean(ent)
+        pi_info = dict(kl=approx_kl, ent=entropy)
     actor_grads = tape.gradient(loss_pi, ac.actor.trainable_variables)
     actor_optimizer.apply_gradients(zip(actor_grads, ac.actor.trainable_variables))
 
@@ -277,8 +280,8 @@ class PPOBuffer:
 Main
 """
 # paramas
-steps_per_epoch=8000
-epochs=100
+steps_per_epoch=4000
+epochs=200
 gamma=0.99
 clip_ratio=0.2
 pi_lr=3e-4
@@ -298,6 +301,7 @@ buffer = PPOBuffer(obs_dim, act_dim, steps_per_epoch, gamma, lam)
 actor_optimizer = tf.keras.optimizers.Adam(learning_rate=3e-4)
 critic_optimizer = tf.keras.optimizers.Adam(learning_rate=1e-4)
 # Prepare for interaction with environment
+model_dir = './training_models/ppo/'
 start_time = time.time()
 obs, ep_ret, ep_len = env.reset(), 0, 0
 episodes, total_steps, ave_rets = 0, 0, []
@@ -330,7 +334,11 @@ for ep in range(epochs):
             obs, ep_ret, ep_len = env.reset(), 0, 0
     # Save model
     if not ep%save_freq or (ep==epochs-1):
-        pass
+        model_path = os.path.join(model_dir, env.spec.id, 'models', str(ep))
+        if not os.path.exists(os.path.dirname(model_path)):
+            os.makedirs(os.path.dirname(model_path))
+        tf.saved_model.save(ac, model_path)
+
     # update actor-critic
     loss_pi, pi_info, loss_v = update(buffer)
     print("\n================================================================\nEpoch: {} \nStep: {} \nAveReturn: {} \nLossPi: {} \nLossV: {} \nKLDivergence: {} \n Entropy: {} \nTimeElapsed: {}\n================================================================\n".format(ep+1, st+1, ave_rets[-1], loss_pi, loss_v, pi_info['kl'], pi_info['ent'], time.time()-start_time))
@@ -349,7 +357,7 @@ for ep in range(num_episodes):
         act, _, _ = ac.step(obs.reshape(1,-1))
         next_obs, rew, done, info = env.step(act)
         rewards.append(rew)
-        print("\n-\nepisode: {}, step: {} \naction: {} \nobs: {}, \nreward: {}".format(ep+1, st+1, act, obs, rew))
+        # print("\n-\nepisode: {}, step: {} \naction: {} \nobs: {}, \nreward: {}".format(ep+1, st+1, act, obs, rew))
         obs = next_obs.copy()
         if done:
             ep_rets.append(sum(rewards))
