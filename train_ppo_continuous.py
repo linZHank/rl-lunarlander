@@ -141,8 +141,8 @@ def compute_actor_gradients(data):
         ratio = tf.math.exp(logp - logp_old)
         clip_adv = tf.math.multiply(tf.clip_by_value(ratio, 1-clip_ratio, 1+clip_ratio), adv)
         ent = tf.math.reduce_sum(pi.entropy(), axis=-1)
-        loss = tf.math.minimum(tf.math.multiply(ratio, adv), clip_adv) - .01*ent
-        loss_pi = -tf.math.reduce_mean(loss)
+        objective = tf.math.minimum(tf.math.multiply(ratio, adv), clip_adv) - .01*ent
+        loss_pi = -tf.math.reduce_mean(objective)
         # useful info
         approx_kl = tf.math.reduce_mean(logp_old - logp, axis=-1)
         entropy = tf.math.reduce_mean(ent)
@@ -275,7 +275,7 @@ env = gym.make('LunarLanderContinuous-v2')
 # env = gym.make('Pendulum-v0')
 # paramas
 steps_per_epoch=4000
-epochs=200
+epochs=1000
 gamma=0.99
 clip_ratio=0.2
 pi_lr=3e-4
@@ -293,7 +293,7 @@ ac = MLPActorCritic(obs_dim=obs_dim, act_dim=act_dim)
 buffer = PPOBuffer(obs_dim, act_dim, steps_per_epoch, gamma, lam)
 # create optimizer
 actor_optimizer = tf.keras.optimizers.Adam(learning_rate=3e-4)
-critic_optimizer = tf.keras.optimizers.Adam(learning_rate=1e-4)
+critic_optimizer = tf.keras.optimizers.Adam(learning_rate=1e-3)
 # Prepare for interaction with environment
 model_dir = './training_models/ppo'
 start_time = time.time()
