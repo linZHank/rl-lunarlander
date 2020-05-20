@@ -17,7 +17,7 @@ env = gym.make('LunarLanderContinuous-v2')
 
 # load model
 # model_path = './training_models/ppo/LunarLanderContinuous-v2/models/199'
-model_path = './training_models/ppo/test/LunarLanderContinuous-v2/models/9'
+model_path = './training_models/ppo/LunarLanderContinuous-v2/models/199'
 ac = tf.saved_model.load(model_path)
 # params
 num_episodes = 10
@@ -31,8 +31,10 @@ if __name__ == '__main__':
         obs, done, rewards = env.reset(), False, []
         for st in range(num_steps):
             env.render()
-            act, _, _ = ac.step(obs.reshape(1,-1))
-            next_obs, rew, done, info = env.step(act.numpy())
+            # act, _, _ = ac.step(obs.reshape(1,-1))
+            # next_obs, rew, done, info = env.step(act.numpy())
+            act = np.squeeze(ac.actor.mu_net(obs.reshape(1,-1)))
+            next_obs, rew, done, info = env.step(act)
             rewards.append(rew)
             # print("\n-\nepisode: {}, step: {} \naction: {} \nobs: {}, \nreward: {}".format(ep+1, st+1, act, obs, rew))
             obs = next_obs.copy()

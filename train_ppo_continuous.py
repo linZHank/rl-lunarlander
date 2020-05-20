@@ -100,7 +100,7 @@ class MLPCritic(tf.Module):
         super().__init__()
         self.v_net = mlp([obs_dim] + list(hidden_sizes) + [1], activation)
 
-    @tf.function
+    # @tf.function
     def __call__(self, obs):
         return tf.squeeze(self.v_net(obs), axis=-1)
 
@@ -110,7 +110,7 @@ class MLPActorCritic(tf.Module):
         self.actor = MLPGaussianActor(obs_dim=obs_dim, act_dim=act_dim, hidden_sizes=hidden_sizes, activation=activation)
         self.critic = MLPCritic(obs_dim=obs_dim, hidden_sizes=hidden_sizes, activation=activation)
 
-    @tf.function
+    # @tf.function
     def step(self, obs):
         with tf.GradientTape() as t:
             with t.stop_recording():
@@ -122,7 +122,7 @@ class MLPActorCritic(tf.Module):
         # return a.numpy(), v.numpy(), logp_a.numpy()
         return a, v, logp_a
 
-    @tf.function
+    # @tf.function
     def act(self, obs):
         return self.step(obs)[0]
 ################################################################
@@ -275,7 +275,7 @@ env = gym.make('LunarLanderContinuous-v2')
 # env = gym.make('Pendulum-v0')
 # paramas
 steps_per_epoch=4000
-epochs=1000
+epochs=200
 gamma=0.99
 clip_ratio=0.2
 pi_lr=3e-4
