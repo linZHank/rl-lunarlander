@@ -1,24 +1,59 @@
+import sys
+import os
+from copy import deepcopy
 import numpy as np
 import scipy.signal
+import random
+import time
+import gym
+import matplotlib.pyplot as plt
+from datetime import datetime
+import logging
 
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from torch.distributions.normal import Normal
+import tensorflow as tf
+print(tf.__version__)
+import tensorflow_probability as tfp
+tfd = tfp.distributions
+################################################################
+"""
+Unnecessary initial settings
+"""
+# restrict GPU and memory growth
+gpus = tf.config.experimental.list_physical_devices('GPU')
+if gpus:
+    try:
+        # Currently, memory growth needs to be the same across GPUs
+        for gpu in gpus:
+            tf.config.experimental.set_memory_growth(gpu, True)
+    except RuntimeError as e:
+        # Visible devices must be set before GPUs have been initialized
+        print(e)
+    # Restrict TensorFlow to only use the first GPU
+    try:
+        tf.config.experimental.set_visible_devices(gpus[0], 'GPU')
+        logical_gpus = tf.config.experimental.list_logical_devices('GPU')
+        print(len(gpus), "Physical GPUs,", len(logical_gpus), "Logical GPU")
+    except RuntimeError as e:
+        # Visible devices must be set before GPUs have been initialized
+        print(e)
+# set log level
+logging.basicConfig(format='%(asctime)s %(message)s',level=logging.DEBUG)
+################################################################
 
 
-# core.py
-def combined_shape(length, shape=None):
-    if shape is None:
-        return (length,)
-    return (length, shape) if np.isscalar(shape) else (length, *shape)
+################################################################
+"""
+instantiate env
+"""
+env = gym.make('LunarLanderContinuous-v2')
+# env = gym.make('Pendulum-v0')
+################################################################
 
-# def mlp(sizes, activation, output_activation=nn.Identity):
-#     layers = []
-#     for j in range(len(sizes)-1):
-#         act = activation if j < len(sizes)-2 else output_activation
-#         layers += [nn.Linear(sizes[j], sizes[j+1]), act()]
-#     return nn.Sequential(*layers)
+
+################################################################
+"""
+Build actor_net, critic_net
+"""
 def mlp(sizes, activation, output_activation=None):
     inputs = tf.keras.Input(shape=(sizes[0],))
     x = tf.keras.layers.Dense(sizes[1], activation=activation)(inputs)
@@ -28,287 +63,291 @@ def mlp(sizes, activation, output_activation=None):
 
     return tf.keras.Model(inputs=inputs, outputs=outputs)
 
-def count_vars(module):
-    return sum([np.prod(p.shape) for p in module.parameters()])
-
-
 LOG_STD_MAX = 2
 LOG_STD_MIN = -20
 
-class SquashedGaussianMLPActor(nn.Module):
-
-    def __init__(self, obs_dim, act_dim, hidden_sizes, activation, act_limit):
+class SquashedGaussianMLPActor(tf.Module):
+    def __init__(self, obs_dim, act_dim, hidden_sizes, activation, act_limit): # do not include obs_dim or act_dim in hidden_sizes
         super().__init__()
-        self.net = mlp([obs_dim] + list(hidden_sizes), activation, activation)
-        self.mu_layer = nn.Linear(hidden_sizes[-1], act_dim)
-        self.log_std_layer = nn.Linear(hidden_sizes[-1], act_dim)
+        inputs = tf.keras.Input(shape=(obs_dim,))
+        x = tf.keras.layers.Dense(hidden_sizes[0], activation=activation)(inputs)
+        for i in range(1,len(hidden_sizes)):
+            x = tf.keras.layers.Dense(hidden_sizes[i], activation=activation)(x)
+        self.mu_net = tf.keras.layers.Dense(act_dim, name='mu_layer')(x)
+        self.log_std_net = tf.keras.layers.Dense(act_dim, name='log_std_layer')(x)
         self.act_limit = act_limit
 
-    def forward(self, obs, deterministic=False, with_logprob=True):
-        net_out = self.net(obs)
-        mu = self.mu_layer(net_out)
-        log_std = self.log_std_layer(net_out)
-        log_std = torch.clamp(log_std, LOG_STD_MIN, LOG_STD_MAX)
-        std = torch.exp(log_std)
+        def __call__(self, obs, deterministic=False, with_logprob=True):
+            mu = self.mu_net(obs)
+            log_std = self.log_std_net(obs)
+            clipped_log_std = tf.clip_by_value(log_std, LOG_STD_MIN, LOG_STD_MAX)
+            std = tf.math.exp(clipped_log_std)
+            # Pre-squash distribution and sample
+            pi_distribution = tfd.Normal(mu, std)
+            if deterministic: # for evaluation purpose only
+                pi_action = mu
+            else:
+                pi_ation = pi_distribution.sample()
+            if with_logprob:
+                # Compute logprob from Gaussian, and then apply correction for Tanh squashing.
+                # NOTE: The correction formula is a little bit magic. To get an understanding
+                # of where it comes from, check out the original SAC paper (arXiv 1801.01290)
+                # and look in appendix C. This is a more numerically-stable equivalent to Eq 21.
+                # Try deriving it yourself as a (very difficult) exercise. :)
+                logp_pi = pi_distribution.log_prob(pi_action).sum(axis=-1)
+                logp_pi -= (2*(np.log(2) - pi_action - tf.math.softplus(-2*pi_action))).sum(axis=1)
+            else:
+                logp_pi = None
+            pi_action = tf.math.tanh(pi_action)
+            pi_action = self.act_limit*pi_action
 
-        # Pre-squash distribution and sample
-        pi_distribution = Normal(mu, std)
-        if deterministic:
-            # Only used for evaluating policy at test time.
-            pi_action = mu
-        else:
-            pi_action = pi_distribution.rsample()
-
-        if with_logprob:
-            # Compute logprob from Gaussian, and then apply correction for Tanh squashing.
-            # NOTE: The correction formula is a little bit magic. To get an understanding
-            # of where it comes from, check out the original SAC paper (arXiv 1801.01290)
-            # and look in appendix C. This is a more numerically-stable equivalent to Eq 21.
-            # Try deriving it yourself as a (very difficult) exercise. :)
-            logp_pi = pi_distribution.log_prob(pi_action).sum(axis=-1)
-            logp_pi -= (2*(np.log(2) - pi_action - F.softplus(-2*pi_action))).sum(axis=1)
-        else:
-            logp_pi = None
-
-        pi_action = torch.tanh(pi_action)
-        pi_action = self.act_limit * pi_action
-
-        return pi_action, logp_pi
-
-
-class MLPQFunction(nn.Module):
-
+class MLPQFunction(tf.Module):
     def __init__(self, obs_dim, act_dim, hidden_sizes, activation):
         super().__init__()
-        self.q = mlp([obs_dim + act_dim] + list(hidden_sizes) + [1], activation)
+        self.q_net = mlp([obs_dim + act_dim] + list(hidden_sizes) + [1], activation)
 
-    def forward(self, obs, act):
-        q = self.q(torch.cat([obs, act], dim=-1))
-        return torch.squeeze(q, -1) # Critical to ensure q has right shape.
+    def __call__(self, obs, act):
+        q_val = self.q_net(tf.concat([obs, act], axis=1))
+        return tf.math.squeeze(q_val, axis=-1) # Critical to ensure q has right shape.
 
-class MLPActorCritic(nn.Module):
+class MLPActorCritic(tf.Module):
 
     def __init__(self, observation_space, action_space, hidden_sizes=(256,256),
-                 activation=nn.ReLU):
+                 activation='relu'):
         super().__init__()
-
         obs_dim = observation_space.shape[0]
         act_dim = action_space.shape[0]
         act_limit = action_space.high[0]
-
         # build policy and value functions
         self.pi = SquashedGaussianMLPActor(obs_dim, act_dim, hidden_sizes, activation, act_limit)
         self.q1 = MLPQFunction(obs_dim, act_dim, hidden_sizes, activation)
         self.q2 = MLPQFunction(obs_dim, act_dim, hidden_sizes, activation)
 
     def act(self, obs, deterministic=False):
-        with torch.no_grad():
-            a, _ = self.pi(obs, deterministic, False)
-            return a.numpy()
+        a, _ = tf.stop_gradient(self.pi(obs, deterministic, False))
+        return a.numpy()
+################################################################
 
 
-# sac.py
-from copy import deepcopy
-import itertools
-import numpy as np
-from torch.optim import Adam
-import gym
-import time
-
-class ReplayBuffer:
-    """
-    A simple FIFO experience replay buffer for SAC agents.
-    """
-
-    def __init__(self, obs_dim, act_dim, size):
-        self.obs_buf = np.zeros(combined_shape(size, obs_dim), dtype=np.float32)
-        self.obs2_buf = np.zeros(combined_shape(size, obs_dim), dtype=np.float32)
-        self.act_buf = np.zeros(combined_shape(size, act_dim), dtype=np.float32)
-        self.rew_buf = np.zeros(size, dtype=np.float32)
-        self.done_buf = np.zeros(size, dtype=np.float32)
-        self.ptr, self.size, self.max_size = 0, 0, size
-
-    def store(self, obs, act, rew, next_obs, done):
-        self.obs_buf[self.ptr] = obs
-        self.obs2_buf[self.ptr] = next_obs
-        self.act_buf[self.ptr] = act
-        self.rew_buf[self.ptr] = rew
-        self.done_buf[self.ptr] = done
-        self.ptr = (self.ptr+1) % self.max_size
-        self.size = min(self.size+1, self.max_size)
-
-    def sample_batch(self, batch_size=32):
-        idxs = np.random.randint(0, self.size, size=batch_size)
-        batch = dict(obs=self.obs_buf[idxs],
-                     obs2=self.obs2_buf[idxs],
-                     act=self.act_buf[idxs],
-                     rew=self.rew_buf[idxs],
-                     done=self.done_buf[idxs])
-        return {k: torch.as_tensor(v, dtype=torch.float32) for k,v in batch.items()}
-
-
-# setup agent
-env = gym.make('LunarLanderContinuous-v2')
-obs_dim = env.observation_space.shape
-act_dim = env.action_space.shape[0]
-act_limit = env.action_space.high[0]
-ac = MLPActorCritic(env.observation_space, env.action_space)
-ac_targ = deepcopy(ac)
-# List of parameters for both Q-networks (save this for convenience)
-q_params = itertools.chain(ac.q1.parameters(), ac.q2.parameters())
-# Count variables (protip: try to get a feel for how different size networks behave!)
-var_counts = tuple(count_vars(module) for module in [ac.pi, ac.q1, ac.q2])
-print('\nNumber of parameters: \t pi: %d, \t q1: %d, \t q2: %d\n'%var_counts)
-# Set up function for computing SAC Q-losses
-def compute_loss_q(data):
-    o, a, r, o2, d = data['obs'], data['act'], data['rew'], data['obs2'], data['done']
-
-    q1 = ac.q1(o,a)
-    q2 = ac.q2(o,a)
-
-    # Bellman backup for Q functions
-    with torch.no_grad():
-        # Target actions come from *current* policy
-        a2, logp_a2 = ac.pi(o2)
-
-        # Target Q-values
-        q1_pi_targ = ac_targ.q1(o2, a2)
-        q2_pi_targ = ac_targ.q2(o2, a2)
-        q_pi_targ = torch.min(q1_pi_targ, q2_pi_targ)
-        backup = r + gamma * (1 - d) * (q_pi_targ - alpha * logp_a2)
-    # MSE loss against Bellman backup
-    loss_q1 = ((q1 - backup)**2).mean()
-    loss_q2 = ((q2 - backup)**2).mean()
-    loss_q = loss_q1 + loss_q2
-    # Useful info for logging
-    q_info = dict(Q1Vals=q1.detach().numpy(),
-                  Q2Vals=q2.detach().numpy())
-    print("loss_q: {}".format(loss_q))
-
-    return loss_q, q_info
-
-# Set up function for computing SAC pi loss
-def compute_loss_pi(data):
-    o = data['obs']
-    pi, logp_pi = ac.pi(o)
-    q1_pi = ac.q1(o, pi)
-    q2_pi = ac.q2(o, pi)
-    q_pi = torch.min(q1_pi, q2_pi)
-    # Entropy-regularized policy loss
-    loss_pi = (alpha * logp_pi - q_pi).mean()
-    # Useful info for logging
-    pi_info = dict(LogPi=logp_pi.detach().numpy())
-    print("loss_pi: {}".format(loss_pi))
+################################################################
+"""
+Compute losses and gradients
+"""
+def compute_actor_gradients(data):
+    obs, act, adv, logp_old = data['obs'], data['act'], data['adv'], data['logp']
+    with tf.GradientTape() as tape:
+        tape.watch(ac.actor.trainable_variables)
+        pi, logp = ac.actor(obs, act)
+        # print("pi: {} \nlogp: {}".format(pi, logp))
+        ratio = tf.math.exp(logp - logp_old)
+        clip_adv = tf.math.multiply(tf.clip_by_value(ratio, 1-clip_ratio, 1+clip_ratio), adv)
+        ent = tf.math.reduce_sum(pi.entropy(), axis=-1)
+        objective = tf.math.minimum(tf.math.multiply(ratio, adv), clip_adv) - .01*ent
+        loss_pi = -tf.math.reduce_mean(objective)
+        # useful info
+        approx_kl = tf.math.reduce_mean(logp_old - logp, axis=-1)
+        entropy = tf.math.reduce_mean(ent)
+        pi_info = dict(kl=approx_kl, ent=entropy)
+    actor_grads = tape.gradient(loss_pi, ac.actor.trainable_variables)
+    actor_optimizer.apply_gradients(zip(actor_grads, ac.actor.trainable_variables))
 
     return loss_pi, pi_info
 
-def update(data):
-    # First run one gradient descent step for Q1 and Q2
-    q_optimizer.zero_grad()
-    loss_q, q_info = compute_loss_q(data)
-    loss_q.backward()
-    q_optimizer.step()
-    # Freeze Q-networks so you don't waste computational effort
-    # computing gradients for them during the policy learning step.
-    for p in q_params:
-        p.requires_grad = False
-    # Next run one gradient descent step for pi.
-    pi_optimizer.zero_grad()
-    loss_pi, pi_info = compute_loss_pi(data)
-    loss_pi.backward()
-    pi_optimizer.step()
-    # Unfreeze Q-networks so you can optimize it at next DDPG step.
-    for p in q_params:
-        p.requires_grad = True
-    # Finally, update target networks by polyak averaging.
-    with torch.no_grad():
-        for p, p_targ in zip(ac.parameters(), ac_targ.parameters()):
-            # NB: We use an in-place operations "mul_", "add_" to update target
-            # params, as opposed to "mul" and "add", which would make new tensors.
-            p_targ.data.mul_(polyak)
-            p_targ.data.add_((1 - polyak) * p.data)
+def compute_critic_gradients(data):
+    obs, ret = data['obs'], data['ret']
+    with tf.GradientTape() as tape:
+        tape.watch(ac.critic.trainable_variables)
+        loss_v = tf.keras.losses.MSE(ret, ac.critic(obs))
+    critic_grads = tape.gradient(loss_v, ac.critic.trainable_variables)
+    critic_optimizer.apply_gradients(zip(critic_grads, ac.critic.trainable_variables))
 
-def get_action(o, deterministic=False):
-    return ac.act(torch.as_tensor(o, dtype=torch.float32),
-                  deterministic)
+    return loss_v
+
+def update(buffer):
+    data = buffer.get()
+    for i in range(train_pi_iters):
+        loss_pi, pi_info = compute_actor_gradients(data)
+        kl = pi_info['kl']
+        if kl > 1.5 * target_kl:
+                print('Early stopping at step %d due to reaching max kl.'%i)
+                break
+    for j in range(train_v_iters):
+        loss_v = compute_critic_gradients(data)
+
+    return loss_pi, pi_info, loss_v
+################################################################
 
 
-# get prepared
+################################################################
+"""
+On-policy Replay Buffer for PPO
+"""
+def discount_cumsum(x, discount):
+    """
+    magic from rllab for computing discounted cumulative sums of vectors.
+    input:
+        vector x,
+        [x0,
+         x1,
+         x2]
+    output:
+        [x0 + discount * x1 + discount^2 * x2,
+         x1 + discount * x2,
+         x2]
+    """
+    return scipy.signal.lfilter([1], [1, float(-discount)], x[::-1], axis=0)[::-1]
+
+class PPOBuffer:
+    """
+    A buffer for storing trajectories experienced by a PPO agent interacting
+    with the environment, and using Generalized Advantage Estimation (GAE-Lambda)
+    for calculating the advantages of state-action pairs.
+    """
+    def __init__(self, obs_dim, act_dim, size, gamma=0.99, lam=0.95):
+        self.obs_buf = np.zeros((size, obs_dim), dtype=np.float32)
+        self.act_buf = np.zeros((size, act_dim), dtype=np.float32)
+        self.adv_buf = np.zeros(size, dtype=np.float32)
+        self.rew_buf = np.zeros(size, dtype=np.float32)
+        self.ret_buf = np.zeros(size, dtype=np.float32)
+        self.val_buf = np.zeros(size, dtype=np.float32)
+        self.logp_buf = np.zeros(size, dtype=np.float32)
+        self.gamma, self.lam = gamma, lam
+        self.ptr, self.path_start_idx, self.max_size = 0, 0, size
+
+    def store(self, obs, act, rew, val, logp):
+        """
+        Append one timestep of agent-environment interaction to the buffer.
+        """
+        assert self.ptr <= self.max_size     # buffer has to have room so you can store
+        self.obs_buf[self.ptr] = obs
+        self.act_buf[self.ptr] = act
+        self.rew_buf[self.ptr] = rew
+        self.val_buf[self.ptr] = val
+        self.logp_buf[self.ptr] = logp
+        self.ptr += 1
+
+    def finish_path(self, last_val=0):
+        """
+        Call this at the end of a trajectory, uses rewards and value estimates from
+        the whole trajectory to compute advantage estimates with GAE-Lambda,
+        as well as compute the rewards-to-go for each state, to use as
+        the targets for the value function.
+        The "last_val" argument should be 0 if the trajectory ended
+        because the agent reached a terminal state (died), and otherwise
+        should be V(s_T), the value function estimated for the last state.
+        This allows us to bootstrap the reward-to-go calculation to account
+        for timesteps beyond the arbitrary episode horizon (or epoch cutoff).
+        """
+        path_slice = slice(self.path_start_idx, self.ptr)
+        rews = np.append(self.rew_buf[path_slice], last_val)
+        vals = np.append(self.val_buf[path_slice], last_val)
+        # the next two lines implement GAE-Lambda advantage calculation
+        deltas = rews[:-1] + self.gamma * vals[1:] - vals[:-1]
+        self.adv_buf[path_slice] = discount_cumsum(deltas, self.gamma * self.lam)
+        # the next line computes rewards-to-go, to be targets for the value function
+        self.ret_buf[path_slice] = discount_cumsum(rews, self.gamma)[:-1]
+        self.path_start_idx = self.ptr
+        # self.ptr, self.path_start_idx = 0, 0
+
+    def get(self):
+        """
+        Call this at the end of an epoch to get all of the data from
+        the buffer, with advantages appropriately normalized (shifted to have
+        mean zero and std one). Also, resets some pointers in the buffer.
+        """
+        assert self.ptr == self.max_size    # buffer has to be full before you can get
+        self.ptr, self.path_start_idx = 0, 0
+        # the next two lines implement the advantage normalization trick
+        adv_mean = np.mean(self.adv_buf)
+        adv_std = np.std(self.adv_buf)
+        self.adv_buf = (self.adv_buf - adv_mean) / adv_std
+        data = dict(obs=self.obs_buf, act=self.act_buf, ret=self.ret_buf,
+                    adv=self.adv_buf, logp=self.logp_buf)
+        return {k: tf.convert_to_tensor(v, dtype=tf.float32) for k,v in data.items()}
+################################################################
+
+
+################################################################
+"""
+Main
+"""
+# instantiate env
+env = gym.make('LunarLanderContinuous-v2')
+# env = gym.make('Pendulum-v0')
+# paramas
 steps_per_epoch=4000
-epochs=100
-replay_size=int(1e6)
+epochs=200
 gamma=0.99
-polyak=0.995
-lr=1e-3
-alpha=0.2
-batch_size=100
-start_steps=10000
-update_after=1000
-update_every=50
-num_test_episodes=10
+clip_ratio=0.2
+pi_lr=3e-4
+vf_lr=1e-3
+train_pi_iters=80
+train_v_iters=80
+lam=0.97
 max_ep_len=1000
-save_freq = 1
-total_steps = steps_per_epoch * epochs
+target_kl=0.01
+save_freq=10
+# instantiate actor-critic and replay buffer
+obs_dim=env.observation_space.shape[0]
+act_dim=env.action_space.shape[0]
+ac = MLPActorCritic(obs_dim=obs_dim, act_dim=act_dim)
+buffer = PPOBuffer(obs_dim, act_dim, steps_per_epoch, gamma, lam)
+# create optimizer
+actor_optimizer = tf.keras.optimizers.Adam(learning_rate=3e-4)
+critic_optimizer = tf.keras.optimizers.Adam(learning_rate=1e-3)
+# Prepare for interaction with environment
+model_dir = './training_models/ppo'
 start_time = time.time()
-# Set up optimizers for policy and q-function
-pi_optimizer = Adam(ac.pi.parameters(), lr=lr)
-q_optimizer = Adam(q_params, lr=lr)
-# Freeze target networks with respect to optimizers (only update via polyak averaging)
-for p in ac_targ.parameters():
-    p.requires_grad = False
-# Experience buffer
-replay_buffer = ReplayBuffer(obs_dim=obs_dim, act_dim=act_dim, size=replay_size)
-
+obs, ep_ret, ep_len = env.reset(), 0, 0
+episodes, total_steps = 0, 0
+stepwise_rewards, episodic_returns, averaged_returns = [], [], []
 # main loop
-o, ep_ret, ep_len = env.reset(), 0, 0
-for t in range(total_steps):
-    # Until start_steps have elapsed, randomly sample actions
-    # from a uniform distribution for better exploration. Afterwards,
-    # use the learned policy.
-    if t > start_steps:
-        a = get_action(o)
-    else:
-        a = env.action_space.sample()
-    # Step the env
-    o2, r, d, _ = env.step(a)
-    ep_ret += r
-    ep_len += 1
-    # Ignore the "done" signal if it comes from hitting the time
-    # horizon (that is, when it's an artificial terminal signal
-    # that isn't based on the agent's state)
-    d = False if ep_len==max_ep_len else d
-    # Store experience to replay buffer
-    replay_buffer.store(o, a, r, o2, d)
-    # Super critical, easy to overlook step: make sure to update
-    # most recent observation!
-    o = o2
-    # End of trajectory handling
-    if d or (ep_len == max_ep_len):
-        # logger.store(EpRet=ep_ret, EpLen=ep_len)
-        # o, ep_ret, ep_len = env.reset(), 0, 0
-        o = env.reset()
+for ep in range(epochs):
+    for st in range(steps_per_epoch):
+        act, val, logp = ac.step(obs.reshape(1,-1))
+        next_obs, rew, done, _ = env.step(act.numpy())
+        ep_ret += rew
+        ep_len += 1
+        stepwise_rewards.append(rew)
+        total_steps += 1
+        buffer.store(obs, act.numpy(), rew, val.numpy(), logp.numpy())
+        obs = next_obs # SUPER CRITICAL!!!
+        # handle episode termination
+        timeout = (ep_len==env.spec.max_episode_steps)
+        terminal = done or timeout
+        epoch_ended = (st==steps_per_epoch-1)
+        if terminal or epoch_ended:
+            if epoch_ended and not(terminal):
+                print('Warning: trajectory cut off by epoch at {} steps.'.format(ep_len), flush=True)
+            if timeout or epoch_ended:
+                _, val, _ = ac.step(obs.reshape(1,-1))
+            else:
+                val = 0
+            buffer.finish_path(val)
+            if terminal:
+                episodes += 1
+                episodic_returns.append(ep_ret)
+                averaged_returns.append(sum(episodic_returns)/episodes)
+                print("\nTotalSteps: {} \nEpisode: {}, Step: {}, EpReturn: {}, EpLength: {}".format(total_steps, episodes, st+1, ep_ret, ep_len))
+            obs, ep_ret, ep_len = env.reset(), 0, 0
+    # Save model
+    if not ep%save_freq or (ep==epochs-1):
+        model_path = os.path.join(model_dir, env.spec.id, 'models', str(ep))
+        if not os.path.exists(os.path.dirname(model_path)):
+            os.makedirs(os.path.dirname(model_path))
+        tf.saved_model.save(ac, model_path)
 
-    # Update handling
-    if t >= update_after and t % update_every == 0:
-        for j in range(update_every):
-            batch = replay_buffer.sample_batch(batch_size)
-            update(data=batch)
-    # End of epoch handling
-    if (t+1) % steps_per_epoch == 0:
-        epoch = (t+1) // steps_per_epoch
-        print(
-            "\n================================================================\nEpoch: {}, Step: {} \nEpReturns: {} \nAveEpReturn: {} \nTime: {} \n================================================================\n".format(
-                epoch,
-                t+1,
-                ep_ret,
-                ep_ret/ep_len,
-                time.time()-start_time
-            )
-        )
-        # Save model
-        # if (epoch % save_freq == 0) or (epoch == epochs):
-        #     logger.save_state({'env': env}, None)
+    # update actor-critic
+    loss_pi, pi_info, loss_v = update(buffer)
+    print("\n================================================================\nEpoch: {} \nStep: {} \nAveReturn: {} \nLossPi: {} \nLossV: {} \nKLDivergence: {} \n Entropy: {} \nTimeElapsed: {}\n================================================================\n".format(ep+1, st+1, averaged_returns[-1], loss_pi, loss_v, pi_info['kl'], pi_info['ent'], time.time()-start_time))
+################################################################
 
+
+# plot returns
+fig, ax = plt.subplots(figsize=(8, 6))
+fig.suptitle('Averaged Returns')
+ax.plot(averaged_returns)
+plt.show()
 
 # Test trained model
 input("Press ENTER to test lander...")
@@ -319,10 +358,10 @@ for ep in range(num_episodes):
     obs, done, rewards = env.reset(), False, []
     for st in range(num_steps):
         env.render()
-        act = get_action(obs)
-        next_obs, rew, done, info = env.step(act)
+        act, _, _ = ac.step(obs.reshape(1,-1))
+        next_obs, rew, done, info = env.step(act.numpy())
         rewards.append(rew)
-        print("\n-\nepisode: {}, step: {} \naction: {} \nobs: {}, \nreward: {}".format(ep+1, st+1, act, obs, rew))
+        # print("\n-\nepisode: {}, step: {} \naction: {} \nobs: {}, \nreward: {}".format(ep+1, st+1, act, obs, rew))
         obs = next_obs.copy()
         if done:
             ep_rets.append(sum(rewards))
