@@ -7,6 +7,7 @@ import logging
 import tensorflow_probability as tfp
 tfd = tfp.distributions
 logging.basicConfig(format='%(asctime)s %(message)s',level=logging.DEBUG)
+import pdb
 
 
 ################################################################
@@ -105,6 +106,9 @@ class PPOAgent:
         # update actor
         for epch in range(num_epochs):
             logging.debug("Staring actor epoch: {}".format(epch))
+            kl_list = [] # kl-divergence storage
+            ent_list = [] # entropy storage
+            entropy = np.zeros(num_epochs)
             for step, batch in enumerate(batched_actor_dataset):
                 with tf.GradientTape() as tape:
                     tape.watch(self.actor.trainable_variables)
@@ -112,28 +116,36 @@ class PPOAgent:
                     ratio = tf.math.exp(logp - batch['logp']) # pi/old_pi
                     clip_adv = tf.math.multiply(tf.clip_by_value(ratio, 1-self.clip_ratio, 1+self.clip_ratio),
                                                 batch['adv'])
-                    ent = tf.math.reduce_sum(pi.entropy(), axis=-1)
                     obj = tf.math.minimum(tf.math.multiply(ratio, batch['adv']), clip_adv) # -.01*ent
                     loss_pi = -tf.math.reduce_mean(obj)
-                    approx_kl = tf.math.reduce_mean(batch['logp'] - logp, axis=-1)
-                    entropy = tf.math.reduce_mean(ent)
-                    if approx_kl > 1.5*self.target_kl:
-                        logging.warning("Early stopping at step {} due to reaching max kl.".format(step+1))
-                        break
+                    # approx_kl = tf.math.reduce_mean(batch['logp'] - logp, axis=-1)
+                    # ent = tf.math.reduce_sum(pi.entropy(), axis=-1)
+                    # entropy = tf.math.reduce_mean(ent)
+                    approx_kl = batch['logp'] - logp
+                    ent = tf.math.reduce_sum(pi.entropy(), axis=-1)
                 # gradient descent actor weights
                 grads_actor = tape.gradient(loss_pi, self.actor.trainable_variables)
                 self.actor_optimizer.apply_gradients(zip(grads_actor, self.actor.trainable_variables))
                 self.actor_loss_metric(loss_pi)
+                # record kl-divergence and entropy
+                kl_list += list(approx_kl.numpy()) 
+                ent_list += list(ent.numpy())
                 # log loss_pi
                 if not step%100:
                     logging.debug("pi update step {}: mean_loss = {}".format(step, self.actor_loss_metric.result()))
             # log epoch
+            kl = tf.math.reduce_mean(kl_list)
+            entropy = tf.math.reduce_mean(ent_list)
             logging.debug("Epoch :{} \nLoss: {} \nEntropy: {} \nKLDivergence: {}".format(
                 epch+1,
                 self.actor_loss_metric.result(),
                 entropy,
-                approx_kl
+                kl
             ))
+            # early cutoff due to large kl-divergence
+            if kl > 1.5*self.target_kl:
+                logging.warning("Early stopping at epoch {} due to reaching max kl-divergence.".format(epch+1))
+                break
         # update critic
         for epch in range(num_epochs):
             logging.debug("Starting critic epoch: {}".format(epch))

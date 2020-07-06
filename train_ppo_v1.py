@@ -29,7 +29,7 @@ def discount_cumsum(x, discount):
     return scipy.signal.lfilter([1], [1, float(-discount)], x[::-1], axis=0)[::-1]
 
 class PPOBuffer:
-    def __init__(self, size, gamma=.99, lam=.95, batch_size=128):
+    def __init__(self, size, gamma=.99, lam=.95, batch_size=32):
         self.obs_buf = []
         self.act_buf = []
         self.logp_buf = []
@@ -104,10 +104,10 @@ if __name__=='__main__':
     env = gym.make('LunarLanderContinuous-v2')
     agent = PPOAgent()
     # parameters
-    num_episodes = 11
+    num_episodes = 1000
     num_steps = env.spec.max_episode_steps
-    buffer_size = int(1e4)
-    update_every = 10 # perform training every update_every episodes
+    buffer_size = int(5e4)
+    update_every = 40 # perform training every update_every episodes
     # variables
     step_counter = 0
     episode_counter = 0
@@ -117,7 +117,7 @@ if __name__=='__main__':
     for ep in range(num_episodes):
         obs, ep_rew = env.reset(), 0
         for st in range(num_steps):
-            env.render()
+#             env.render()
             act, val, logp = agent.pi_given_state(np.expand_dims(obs, axis=0))
             n_obs, rew, done, info = env.step(act)
             logging.debug("\nepisodes: {}, step: {} \nobs: {} \nact: {} \nrew: {} \ndone: {} \ninfo: {}".format(
@@ -131,7 +131,7 @@ if __name__=='__main__':
             ))
             ep_rew += rew
             step_counter += 1
-            buf.store(obs, act, rew, val, logp)
+            buf.store(obs, act, logp, rew, val)
             obs = n_obs.copy()
             if done or (st==num_steps-1):
                 episode_counter += 1
@@ -146,13 +146,13 @@ if __name__=='__main__':
                 if not episode_counter%update_every:
                     # pdb.set_trace()
                     batched_actor_dataset, batched_critic_dataset = buf.get()
-#                     agent.train(batched_actor_dataset, batched_critic_dataset, num_epochs=80)
-#                     buf = PPOBuffer(size=buffer_size)
-#                 logging.info("\n======== \nEpisode: {} \nEpLength: {} \nTotalReward: {} \nSedimentaryReturn: {}".format(
-#                     ep+1,
-#                     st+1,
-#                     ep_rew,
-#                     sedimentary_returns[-1]
-#                 ))
+                    agent.train(batched_actor_dataset, batched_critic_dataset, num_epochs=80)
+                    buf = PPOBuffer(size=buffer_size)
+                logging.info("\n======== \nEpisode: {} \nEpLength: {} \nTotalReward: {} \nSedimentaryReturn: {}".format(
+                    ep+1,
+                    st+1,
+                    ep_rew,
+                    sedimentary_returns[-1]
+                ))
                 break
 
