@@ -106,9 +106,8 @@ class PPOAgent:
         # update actor
         for epch in range(num_epochs):
             logging.debug("Staring actor epoch: {}".format(epch))
-            kl_list = [] # kl-divergence storage
-            ent_list = [] # entropy storage
-            entropy = np.zeros(num_epochs)
+            ep_kl = tf.convert_to_tensor([]) # kl-divergence storage
+            ep_ent = tf.convert_to_tensor([]) # entropy storage
             for step, batch in enumerate(batched_actor_dataset):
                 with tf.GradientTape() as tape:
                     tape.watch(self.actor.trainable_variables)
@@ -118,9 +117,6 @@ class PPOAgent:
                                                 batch['adv'])
                     obj = tf.math.minimum(tf.math.multiply(ratio, batch['adv']), clip_adv) # -.01*ent
                     loss_pi = -tf.math.reduce_mean(obj)
-                    # approx_kl = tf.math.reduce_mean(batch['logp'] - logp, axis=-1)
-                    # ent = tf.math.reduce_sum(pi.entropy(), axis=-1)
-                    # entropy = tf.math.reduce_mean(ent)
                     approx_kl = batch['logp'] - logp
                     ent = tf.math.reduce_sum(pi.entropy(), axis=-1)
                 # gradient descent actor weights
@@ -128,14 +124,14 @@ class PPOAgent:
                 self.actor_optimizer.apply_gradients(zip(grads_actor, self.actor.trainable_variables))
                 self.actor_loss_metric(loss_pi)
                 # record kl-divergence and entropy
-                kl_list += list(approx_kl.numpy()) 
-                ent_list += list(ent.numpy())
+                ep_kl = tf.concat([ep_kl, approx_kl], axis=0)
+                ep_ent = tf.concat([ep_ent, ent], axis=0)
                 # log loss_pi
                 if not step%100:
                     logging.debug("pi update step {}: mean_loss = {}".format(step, self.actor_loss_metric.result()))
             # log epoch
-            kl = tf.math.reduce_mean(kl_list)
-            entropy = tf.math.reduce_mean(ent_list)
+            kl = tf.math.reduce_mean(ep_kl)
+            entropy = tf.math.reduce_mean(ep_ent)
             logging.debug("Epoch :{} \nLoss: {} \nEntropy: {} \nKLDivergence: {}".format(
                 epch+1,
                 self.actor_loss_metric.result(),
