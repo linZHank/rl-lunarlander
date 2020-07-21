@@ -98,12 +98,13 @@ class Actor(tf.keras.Model):
         
 class SoftActorCritic(tf.keras.Model):
     def __init__(self, obs_dim, act_dim, act_lim=1, hidden_sizes=(256,256), activation='relu', gamma = 0.99, alpha=0.2,
-                 critic_lr=3e-4, actor_lr=1e-4, **kwargs):
+                 critic_lr=3e-4, actor_lr=3e-4, polyak=0.995, **kwargs):
         super(SoftActorCritic, self).__init__(name='sac', **kwargs)
         # params
         name = 'sac_agent'
         self.alpha = alpha # entropy temperature
         self.gamma = gamma # discount rate
+        self.polyak = polyak
         #
         self.pi = Actor(obs_dim, act_dim, hidden_sizes, activation, act_lim)
         self.q0 = Critic(obs_dim, act_dim, hidden_sizes, activation) 
@@ -143,6 +144,19 @@ class SoftActorCritic(tf.keras.Model):
             loss_pi = tf.math.reduce_mean(self.alpha*logp - pessi_qval)
         grads_actor = tape.gradient(loss_pi, self.pi.trainable_weights)
         self.actor_optimizer.apply_gradients(zip(grads_actor, self.pi.trainable_weights))
+        # Polyak average update target Q-nets
+        q0_weights_update = []
+        for w_q0, w_targ_q0 in zip(self.q0.get_weights(), self.targ_q0.get_weights()):
+            w_q0_upd = self.polyak*w_targ_q0
+            w_q0_upd = w_q0_upd + (1 - self.polyak)*w_q0
+            q0_weights_update.append(w_q0_upd)
+        self.targ_q0.set_weights(q0_weights_update)
+        q1_weights_update = []
+        for w_q1, w_targ_q1 in zip(self.q1.get_weights(), self.targ_q1.get_weights()):
+            w_q1_upd = self.polyak*w_targ_q1
+            w_q1_upd = w_q1_upd + (1 - self.polyak)*w_q1
+            q1_weights_update.append(w_q1_upd)
+        self.targ_q1.set_weights(q1_weights_update)
 
         return loss_q, loss_pi
     
@@ -181,24 +195,39 @@ class ReplayBuffer:
 if __name__=='__main__':
     env = gym.make('LunarLanderContinuous-v2')
     max_episode_steps = env.spec.max_episode_steps
+    batch_size = 100
     update_freq = 50
+    update_after = 1000
+    warmup_steps = 5000
     sac = SoftActorCritic(obs_dim=8, act_dim=2)
     replay_buffer = ReplayBuffer(obs_dim=8, act_dim=2, size=int(1e6)) 
-    obs, ep_len = env.reset(), 0
-    for t in range(1000):
-        env.render()
-        act = np.squeeze(sac.act(obs.reshape(1,-1)))
+    total_steps = int(5e5)
+    episodic_returns = []
+    sedimentary_returns = []
+    episode_counter = 0
+    obs, ep_ret, ep_len = env.reset(), 0, 0
+    for t in range(total_steps):
+        # env.render()
+        if t < warmup_steps:
+            act = env.action_space.sample()
+        else:
+            act = np.squeeze(sac.act(obs.reshape(1,-1)))
         nobs, rew, done, _ = env.step(act)
+        ep_ret += rew
         ep_len += 1
         done = False if ep_len == max_episode_steps else done
         replay_buffer.store(obs, act, rew, done, nobs)
         obs = nobs
         if done or (ep_len==max_episode_steps):
-            obs, ep_len = env.reset(), 0
-        if not t%update_freq:
+            episode_counter += 1
+            episodic_returns.append(ep_ret)
+            sedimentary_returns.append(ep_ret/episode_counter)
+            print("\n====\nEpisode: {} \nEpisodeLength: {} \nTotalSteps: {} \nEpisodeReturn: {} \nSedimentaryReturn: {}\n====\n".format(episode_counter, ep_len, t+1, ep_ret, sedimentary_returns[-1]))
+            obs, ep_ret, ep_len = env.reset(), 0, 0
+        if not t%update_freq and t>=update_after:
             for _ in range(update_freq):
-                minibatch = replay_buffer.sample_batch()
+                minibatch = replay_buffer.sample_batch(batch_size=batch_size)
                 loss_q, loss_pi = sac.train_one_batch(data=minibatch)
-                print("\nloss_q: {} \nloss_pi: {}".format(loss_q, loss_pi))
+                logging.debug("\nloss_q: {} \nloss_pi: {}".format(loss_q, loss_pi))
 
 
