@@ -97,7 +97,7 @@ class Actor(tf.keras.Model):
         return action, logp_pi
         
 class SoftActorCritic(tf.keras.Model):
-    def __init__(self, obs_dim, act_dim, act_lim=1, hidden_sizes=(256,256), activation='relu', gamma = 0.99, alpha=0.2,
+    def __init__(self, obs_dim, act_dim, act_lim=1, hidden_sizes=(256,256), activation='relu', gamma = 0.99, alpha=0.,
                  critic_lr=3e-4, actor_lr=3e-4, polyak=0.995, **kwargs):
         super(SoftActorCritic, self).__init__(name='sac', **kwargs)
         # params
@@ -201,11 +201,11 @@ if __name__=='__main__':
     warmup_steps = 5000
     sac = SoftActorCritic(obs_dim=8, act_dim=2)
     replay_buffer = ReplayBuffer(obs_dim=8, act_dim=2, size=int(1e6)) 
-    total_steps = int(5e5)
+    total_steps = int(3e5)
     episodic_returns = []
     sedimentary_returns = []
     episode_counter = 0
-    obs, ep_ret, ep_len = env.reset(), 0, 0
+    obs, done, ep_ret, ep_len = env.reset(), False, 0, 0
     for t in range(total_steps):
         # env.render()
         if t < warmup_steps:
@@ -221,13 +221,24 @@ if __name__=='__main__':
         if done or (ep_len==max_episode_steps):
             episode_counter += 1
             episodic_returns.append(ep_ret)
-            sedimentary_returns.append(ep_ret/episode_counter)
+            sedimentary_returns.append(sum(episodic_returns)/episode_counter)
             print("\n====\nEpisode: {} \nEpisodeLength: {} \nTotalSteps: {} \nEpisodeReturn: {} \nSedimentaryReturn: {}\n====\n".format(episode_counter, ep_len, t+1, ep_ret, sedimentary_returns[-1]))
-            obs, ep_ret, ep_len = env.reset(), 0, 0
+            obs, done, ep_ret, ep_len = env.reset(), False, 0, 0
         if not t%update_freq and t>=update_after:
             for _ in range(update_freq):
                 minibatch = replay_buffer.sample_batch(batch_size=batch_size)
                 loss_q, loss_pi = sac.train_one_batch(data=minibatch)
                 logging.debug("\nloss_q: {} \nloss_pi: {}".format(loss_q, loss_pi))
 
-
+input("Press ENTER to test lander...")
+for ep in range(10):
+    o, d, ep_ret = env.reset(), False, 0
+    for st in range(max_episode_steps):
+        env.render()
+        a = np.squeeze(sac.act(o.reshape(1,-1), deterministic=True))
+        o2,r,d,_ = env.step(a)
+        ep_ret += r
+        o = o2
+        if d:
+            print("EpReturn: {}".format(ep_ret))
+            break 
