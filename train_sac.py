@@ -30,7 +30,7 @@ if gpus:
         print(e)
     # Restrict TensorFlow to only use the first GPU
     try:
-        tf.config.experimental.set_visible_devices(gpus[0], 'GPU')
+        tf.config.experimental.set_visible_devices(gpus[1], 'GPU')
         logical_gpus = tf.config.experimental.list_logical_devices('GPU')
         print(len(gpus), "Physical GPUs,", len(logical_gpus), "Logical GPU")
     except RuntimeError as e:
@@ -40,14 +40,6 @@ if gpus:
 logging.basicConfig(format='%(asctime)s %(message)s',level=logging.DEBUG)
 ################################################################
 
-def mlp(sizes, activation, output_activation=None):
-    inputs = tf.keras.Input(shape=(sizes[0],))
-    x = tf.keras.layers.Dense(sizes[1], activation=activation)(inputs)
-    for i in range(2,len(sizes)-1):
-        x = tf.keras.layers.Dense(sizes[i], activation=activation)(x)
-    outputs = tf.keras.layers.Dense(sizes[-1], activation=output_activation)(x)
-
-    return tf.keras.Model(inputs=inputs, outputs=outputs)
 
 class Critic(tf.keras.Model):
     def __init__(self, obs_dim, act_dim, hidden_sizes, activation, **kwargs):
@@ -192,19 +184,27 @@ class ReplayBuffer:
         return batch
 
 
+RANDOM_SEED = 0
 if __name__=='__main__':
     env = gym.make('LunarLanderContinuous-v2')
     max_episode_steps = env.spec.max_episode_steps
+    # set seed
+    tf.random.set_seed(RANDOM_SEED)
+    env.seed(RANDOM_SEED)
+    np.random.seed(RANDOM_SEED)
+    env.action_space.seed(RANDOM_SEED)
     batch_size = 100
     update_freq = 50
     update_after = 1000
     warmup_steps = 5000
     sac = SoftActorCritic(obs_dim=8, act_dim=2)
     replay_buffer = ReplayBuffer(obs_dim=8, act_dim=2, size=int(1e6)) 
-    total_steps = int(3e5)
+    total_steps = int(1e6)
     episodic_returns = []
     sedimentary_returns = []
+    save_freq = 100
     episode_counter = 0
+    model_dir = './training_models/sac'
     obs, done, ep_ret, ep_len = env.reset(), False, 0, 0
     for t in range(total_steps):
         # env.render()
@@ -223,6 +223,13 @@ if __name__=='__main__':
             episodic_returns.append(ep_ret)
             sedimentary_returns.append(sum(episodic_returns)/episode_counter)
             print("\n====\nEpisode: {} \nEpisodeLength: {} \nTotalSteps: {} \nEpisodeReturn: {} \nSedimentaryReturn: {}\n====\n".format(episode_counter, ep_len, t+1, ep_ret, sedimentary_returns[-1]))
+            # save model
+            if not episode_counter%save_freq:
+                model_path = os.path.join(model_dir, env.spec.id, 'models', str(episode_counter))
+                if not os.path.exists(os.path.dirname(model_path)):
+                    os.makedirs(os.path.dirname(model_path))
+                sac.pi.policy_net.save(model_path)
+            # reset env
             obs, done, ep_ret, ep_len = env.reset(), False, 0, 0
         if not t%update_freq and t>=update_after:
             for _ in range(update_freq):
@@ -230,6 +237,19 @@ if __name__=='__main__':
                 loss_q, loss_pi = sac.train_one_batch(data=minibatch)
                 logging.debug("\nloss_q: {} \nloss_pi: {}".format(loss_q, loss_pi))
 
+    # Save returns 
+    np.save(os.path.join(model_dir, 'episodic_returns.npy'), episodic_returns)
+    np.save(os.path.join(model_dir, 'sedimentary_returns.npy'), sedimentary_returns)
+    # Save final model
+    model_path = os.path.join(model_dir, env.spec.id, 'models', str(episode_counter))
+    sac.pi.policy_net.save(model_path)
+    # plot returns
+    fig, ax = plt.subplots(figsize=(8, 6))
+    fig.suptitle('Averaged Returns')
+    ax.plot(sedimentary_returns)
+    plt.show()
+
+# Test
 input("Press ENTER to test lander...")
 for ep in range(10):
     o, d, ep_ret = env.reset(), False, 0
