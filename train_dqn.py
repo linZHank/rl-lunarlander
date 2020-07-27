@@ -30,7 +30,7 @@ if gpus:
         print(e)
     # Restrict TensorFlow to only use the first GPU
     try:
-        tf.config.experimental.set_visible_devices(gpus[1], 'GPU')
+        tf.config.experimental.set_visible_devices(gpus[0], 'GPU')
         logical_gpus = tf.config.experimental.list_logical_devices('GPU')
         print(len(gpus), "Physical GPUs,", len(logical_gpus), "Logical GPU")
     except RuntimeError as e:
@@ -59,7 +59,6 @@ class DeepQNet(tf.keras.Model):
                  lr=3e-4, polyak=0.995, **kwargs):
         super(DeepQNet, self).__init__(name='dqn', **kwargs)
         # params
-        name = 'dqn_agent'
         self.obs_dim = obs_dim
         self.act_dim = act_dim
         self.alpha = alpha # entropy temperature
@@ -157,7 +156,7 @@ if __name__=='__main__':
     total_steps = int(1e6)
     episodic_returns = []
     sedimentary_returns = []
-    save_freq = 1 #100
+    save_freq = 100
     episode_counter = 0
     model_dir = './training_models/dqn'
     obs, done, ep_ret, ep_len = env.reset(), False, 0, 0

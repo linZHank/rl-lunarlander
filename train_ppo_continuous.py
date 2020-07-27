@@ -30,7 +30,7 @@ if gpus:
         print(e)
     # Restrict TensorFlow to only use the first GPU
     try:
-        tf.config.experimental.set_visible_devices(gpus[0], 'GPU')
+        tf.config.experimental.set_visible_devices(gpus[1], 'GPU')
         logical_gpus = tf.config.experimental.list_logical_devices('GPU')
         print(len(gpus), "Physical GPUs,", len(logical_gpus), "Logical GPU")
     except RuntimeError as e:
@@ -40,14 +40,6 @@ if gpus:
 logging.basicConfig(format='%(asctime)s %(message)s',level=logging.DEBUG)
 ################################################################
 
-
-################################################################
-"""
-instantiate env
-"""
-env = gym.make('LunarLanderContinuous-v2')
-# env = gym.make('Pendulum-v0')
-################################################################
 
 
 ################################################################
@@ -63,117 +55,111 @@ def mlp(sizes, activation, output_activation=None):
 
     return tf.keras.Model(inputs=inputs, outputs=outputs)
 
-class Actor(tf.Module):
-    def _distribution(self, obs):
-        raise NotImplementedError
-
-    def _log_prob_from_distribution(self, pi, act):
-        raise NotImplementedError
-
-    def __call__(self, obs, act=None):
-        # Produce action distributions for given observations, and
-        # optionally compute the log likelihood of given actions under
-        # those distributions.
-        pi = self._distribution(obs)
-        logp_a = None
-        if act is not None:
-            logp_a = self._log_prob_from_distribution(pi, act)
-        return pi, logp_a
-
-class MLPGaussianActor(Actor):
-    def __init__(self, obs_dim, act_dim, hidden_sizes, activation):
-        super().__init__()
-        log_std = -0.5 * np.ones(act_dim, dtype=np.float32)
-        self.log_std = tf.Variable(log_std)
+class Actor(tf.keras.Model):
+    def __init__(self, obs_dim, act_dim, hidden_sizes, activation, **kwargs):
+        super(Actor, self).__init__(name='actor', **kwargs)
+        self.log_std = tf.Variable(initial_value=-0.5*np.ones(act_dim, dtype=np.float32))
         self.mu_net = mlp([obs_dim] + list(hidden_sizes) + [act_dim], activation)
 
     def _distribution(self, obs):
         mu = tf.squeeze(self.mu_net(obs))
         std = tf.math.exp(self.log_std)
-        return tfd.Normal(mu, std)
+
+        return tfd.Normal(loc=mu, scale=std)
 
     def _log_prob_from_distribution(self, pi, act):
         return tf.math.reduce_sum(pi.log_prob(act), axis=-1)
 
-class MLPCritic(tf.Module):
-    def __init__(self, obs_dim, hidden_sizes, activation):
-        super().__init__()
+    def call(self, obs, act=None):
+        pi = self._distribution(obs)
+        logp_a = None
+        if act is not None:
+            logp_a = self._log_prob_from_distribution(pi, act)
+
+        return pi, logp_a
+
+class Critic(tf.keras.Model):
+    def __init__(self, obs_dim, hidden_sizes, activation, **kwargs):
+        super(Critic, self).__init__(name='critic', **kwargs)
         self.v_net = mlp([obs_dim] + list(hidden_sizes) + [1], activation)
 
-    # @tf.function
-    def __call__(self, obs):
+    def call(self, obs):
         return tf.squeeze(self.v_net(obs), axis=-1)
 
-class MLPActorCritic(tf.Module):
-    def __init__(self, obs_dim, act_dim, hidden_sizes=(64,64), activation='tanh'):
-        super().__init__()
-        self.actor = MLPGaussianActor(obs_dim=obs_dim, act_dim=act_dim, hidden_sizes=hidden_sizes, activation=activation)
-        self.critic = MLPCritic(obs_dim=obs_dim, hidden_sizes=hidden_sizes, activation=activation)
+class PPOActorCritic(tf.Module):
+    def __init__(self, obs_dim, act_dim, hidden_sizes=(256,256), activation='relu', clip_ratio=0.2, lr_actor=3e-4, lr_critic=1e-3, beta=0.0, target_kl=0.01, **kwargs):
+        super(PPOActorCritic, self).__init__(name='ppo', **kwargs)
+        # params
+        self.clip_ratio = clip_ratio
+        self.beta = beta
+        self.target_kl = target_kl
+        # networks
+        self.actor = Actor(obs_dim=obs_dim, act_dim=act_dim, hidden_sizes=hidden_sizes, activation=activation)
+        self.actor_optimizer = tf.keras.optimizers.Adam(learning_rate=lr_actor)
+        self.critic_optimizer = tf.keras.optimizers.Adam(learning_rate=lr_critic)
+        self.critic = Critic(obs_dim=obs_dim, hidden_sizes=hidden_sizes, activation=activation)
 
-    # @tf.function
     def step(self, obs):
-        with tf.GradientTape() as t:
-            with t.stop_recording():
-                pi_dist = self.actor._distribution(obs)
-                a = pi_dist.sample()
-                logp_a = self.actor._log_prob_from_distribution(pi_dist, a)
-                v = self.critic(obs)
+        pi_dist = self.actor._distribution(obs)
+        a = pi_dist.sample()
+        logp_a = self.actor._log_prob_from_distribution(pi_dist, a)
+        v = self.critic(obs)
 
-        # return a.numpy(), v.numpy(), logp_a.numpy()
-        return a, v, logp_a
+        return a.numpy(), v.numpy(), logp_a.numpy()
 
-    # @tf.function
     def act(self, obs):
         return self.step(obs)[0]
-################################################################
 
+    def train(self, data, num_epochs):
+        # update actor
+        for epch in range(num_epochs):
+            logging.debug("Staring actor epoch: {}".format(epch+1))
+            ep_kl = tf.convert_to_tensor([]) 
+            ep_ent = tf.convert_to_tensor([]) 
+            with tf.GradientTape() as tape:
+                tape.watch(self.actor.trainable_variables)
+                pi, logp = self.actor(data['obs'], data['act']) 
+                ratio = tf.math.exp(logp - data['logp']) # pi/old_pi
+                clip_adv = tf.math.multiply(tf.clip_by_value(ratio, 1-self.clip_ratio, 1+self.clip_ratio), data['adv'])
+                approx_kl = tf.reshape(data['logp'] - logp, shape=[-1])
+                ent = tf.reshape(tf.math.reduce_sum(pi.entropy(), axis=-1), shape=[-1])
+                obj = tf.math.minimum(tf.math.multiply(ratio, data['adv']), clip_adv) + self.beta*ent
+                loss_pi = -tf.math.reduce_mean(obj)
+            # gradient descent actor weights
+            grads_actor = tape.gradient(loss_pi, self.actor.trainable_variables)
+            self.actor_optimizer.apply_gradients(zip(grads_actor, self.actor.trainable_variables))
+            # record kl-divergence and entropy
+            ep_kl = tf.concat([ep_kl, approx_kl], axis=0)
+            ep_ent = tf.concat([ep_ent, ent], axis=0)
+            # log epoch
+            kl = tf.math.reduce_mean(ep_kl)
+            entropy = tf.math.reduce_mean(ep_ent)
+            logging.info("Epoch :{} \nLoss: {} \nEntropy: {} \nKLDivergence: {}".format(
+                epch+1,
+                loss_pi,
+                entropy,
+                kl
+            ))
+            # early cutoff due to large kl-divergence
+            # if kl > 1.5*self.target_kl:
+            #     logging.warning("Early stopping at epoch {} due to reaching max kl-divergence.".format(epch+1))
+            #     break
+        # update critic
+        for epch in range(num_epochs):
+            logging.debug("Starting critic epoch: {}".format(epch))
+            with tf.GradientTape() as tape:
+                tape.watch(self.critic.trainable_variables)
+                loss_v = tf.keras.losses.MSE(data['ret'], self.critic(data['obs']))
+            # gradient descent critic weights
+            grads_critic = tape.gradient(loss_v, self.critic.trainable_variables)
+            self.critic_optimizer.apply_gradients(zip(grads_critic, self.critic.trainable_variables))
+            # log epoch
+            logging.info("Epoch :{} \nLoss: {}".format(
+                epch+1,
+                loss_v
+            ))
 
-################################################################
-"""
-Compute losses and gradients
-"""
-def compute_actor_gradients(data):
-    obs, act, adv, logp_old = data['obs'], data['act'], data['adv'], data['logp']
-    with tf.GradientTape() as tape:
-        tape.watch(ac.actor.trainable_variables)
-        pi, logp = ac.actor(obs, act)
-        # print("pi: {} \nlogp: {}".format(pi, logp))
-        ratio = tf.math.exp(logp - logp_old)
-        clip_adv = tf.math.multiply(tf.clip_by_value(ratio, 1-clip_ratio, 1+clip_ratio), adv)
-        ent = tf.math.reduce_sum(pi.entropy(), axis=-1)
-        objective = tf.math.minimum(tf.math.multiply(ratio, adv), clip_adv) - .01*ent
-        loss_pi = -tf.math.reduce_mean(objective)
-        # useful info
-        approx_kl = tf.math.reduce_mean(logp_old - logp, axis=-1)
-        entropy = tf.math.reduce_mean(ent)
-        pi_info = dict(kl=approx_kl, ent=entropy)
-    actor_grads = tape.gradient(loss_pi, ac.actor.trainable_variables)
-    actor_optimizer.apply_gradients(zip(actor_grads, ac.actor.trainable_variables))
-
-    return loss_pi, pi_info
-
-def compute_critic_gradients(data):
-    obs, ret = data['obs'], data['ret']
-    with tf.GradientTape() as tape:
-        tape.watch(ac.critic.trainable_variables)
-        loss_v = tf.keras.losses.MSE(ret, ac.critic(obs))
-    critic_grads = tape.gradient(loss_v, ac.critic.trainable_variables)
-    critic_optimizer.apply_gradients(zip(critic_grads, ac.critic.trainable_variables))
-
-    return loss_v
-
-def update(buffer):
-    data = buffer.get()
-    for i in range(train_pi_iters):
-        loss_pi, pi_info = compute_actor_gradients(data)
-        kl = pi_info['kl']
-        if kl > 1.5 * target_kl:
-                print('Early stopping at step %d due to reaching max kl.'%i)
-                break
-    for j in range(train_v_iters):
-        loss_v = compute_critic_gradients(data)
-
-    return loss_pi, pi_info, loss_v
+        return loss_pi, loss_v, dict(kl=kl, ent=entropy) 
 ################################################################
 
 
@@ -270,83 +256,87 @@ class PPOBuffer:
 """
 Main
 """
-# instantiate env
-env = gym.make('LunarLanderContinuous-v2')
-# env = gym.make('Pendulum-v0')
-# paramas
-steps_per_epoch=4000
-epochs=200
-gamma=0.99
-clip_ratio=0.2
-pi_lr=3e-4
-vf_lr=1e-3
-train_pi_iters=80
-train_v_iters=80
-lam=0.97
-max_ep_len=1000
-target_kl=0.01
-save_freq=10
-# instantiate actor-critic and replay buffer
-obs_dim=env.observation_space.shape[0]
-act_dim=env.action_space.shape[0]
-ac = MLPActorCritic(obs_dim=obs_dim, act_dim=act_dim)
-buffer = PPOBuffer(obs_dim, act_dim, steps_per_epoch, gamma, lam)
-# create optimizer
-actor_optimizer = tf.keras.optimizers.Adam(learning_rate=3e-4)
-critic_optimizer = tf.keras.optimizers.Adam(learning_rate=1e-3)
-# Prepare for interaction with environment
-model_dir = './training_models/ppo'
-start_time = time.time()
-obs, ep_ret, ep_len = env.reset(), 0, 0
-episodes, total_steps = 0, 0
-stepwise_rewards, episodic_returns, averaged_returns = [], [], []
-# main loop
-for ep in range(epochs):
-    for st in range(steps_per_epoch):
-        act, val, logp = ac.step(obs.reshape(1,-1))
-        next_obs, rew, done, _ = env.step(act.numpy())
-        ep_ret += rew
-        ep_len += 1
-        stepwise_rewards.append(rew)
-        total_steps += 1
-        buffer.store(obs, act.numpy(), rew, val.numpy(), logp.numpy())
-        obs = next_obs # SUPER CRITICAL!!!
-        # handle episode termination
-        timeout = (ep_len==env.spec.max_episode_steps)
-        terminal = done or timeout
-        epoch_ended = (st==steps_per_epoch-1)
-        if terminal or epoch_ended:
-            if epoch_ended and not(terminal):
-                print('Warning: trajectory cut off by epoch at {} steps.'.format(ep_len), flush=True)
-            if timeout or epoch_ended:
-                _, val, _ = ac.step(obs.reshape(1,-1))
-            else:
-                val = 0
-            buffer.finish_path(val)
-            if terminal:
-                episodes += 1
-                episodic_returns.append(ep_ret)
-                averaged_returns.append(sum(episodic_returns)/episodes)
-                print("\nTotalSteps: {} \nEpisode: {}, Step: {}, EpReturn: {}, EpLength: {}".format(total_steps, episodes, st+1, ep_ret, ep_len))
-            obs, ep_ret, ep_len = env.reset(), 0, 0
-    # Save model
-    if not ep%save_freq or (ep==epochs-1):
-        model_path = os.path.join(model_dir, env.spec.id, 'models', str(ep))
-        if not os.path.exists(os.path.dirname(model_path)):
-            os.makedirs(os.path.dirname(model_path))
-        tf.saved_model.save(ac, model_path)
+RANDOM_SEED = 0
+if __name__=='__main__':
+    # instantiate env
+    env = gym.make('LunarLanderContinuous-v2')
+    # set seed
+    tf.random.set_seed(RANDOM_SEED)
+    env.seed(RANDOM_SEED)
+    np.random.seed(RANDOM_SEED)
+    env.action_space.seed(RANDOM_SEED)
+    # paramas
+    steps_per_epoch=5000
+    epochs=200
+    gamma=0.99
+    train_iters=80
+    lam=0.97
+    max_ep_len=1000
+    save_freq=10
+    # instantiate actor-critic and replay buffer
+    obs_dim=env.observation_space.shape[0]
+    act_dim=env.action_space.shape[0]
+    ppo = PPOActorCritic(obs_dim=obs_dim, act_dim=act_dim)
+    replay_buffer = PPOBuffer(obs_dim, act_dim, steps_per_epoch, gamma, lam)
+    # create optimizer
+    actor_optimizer = tf.keras.optimizers.Adam(learning_rate=3e-4)
+    critic_optimizer = tf.keras.optimizers.Adam(learning_rate=1e-3)
+    # Prepare for interaction with environment
+    model_dir = './training_models/ppo'
+    start_time = time.time()
+    obs, ep_ret, ep_len = env.reset(), 0, 0
+    episodes, total_steps = 0, 0
+    stepwise_rewards, episodic_returns, sedimentary_returns = [], [], []
+    # main loop
+    for ep in range(epochs):
+        for st in range(steps_per_epoch):
+            act, val, logp = ppo.step(obs.reshape(1,-1))
+            next_obs, rew, done, _ = env.step(act)
+            ep_ret += rew
+            ep_len += 1
+            stepwise_rewards.append(rew)
+            total_steps += 1
+            replay_buffer.store(obs, act, rew, val, logp)
+            obs = next_obs # SUPER CRITICAL!!!
+            # handle episode termination
+            timeout = (ep_len==env.spec.max_episode_steps)
+            terminal = done or timeout
+            epoch_ended = (st==steps_per_epoch-1)
+            if terminal or epoch_ended:
+                if epoch_ended and not(terminal):
+                    print('Warning: trajectory cut off by epoch at {} steps.'.format(ep_len), flush=True)
+                if timeout or epoch_ended:
+                    _, val, _ = ppo.step(obs.reshape(1,-1))
+                else:
+                    val = 0
+                replay_buffer.finish_path(val)
+                if terminal:
+                    episodes += 1
+                    episodic_returns.append(ep_ret)
+                    sedimentary_returns.append(sum(episodic_returns)/episodes)
+                    print("\n====\nTotalSteps: {} \nEpisode: {}, Step: {}, EpReturn: {}, EpLength: {} \n====\n".format(total_steps, episodes, st+1, ep_ret, ep_len))
+                obs, ep_ret, ep_len = env.reset(), 0, 0
+        # Save model
+        if not ep%save_freq or (ep==epochs-1):
+            model_path = os.path.join(model_dir, env.spec.id, 'models', str(ep))
+            if not os.path.exists(os.path.dirname(model_path)):
+                os.makedirs(os.path.dirname(model_path))
+            ppo.actor.mu_net.save(model_path)
 
-    # update actor-critic
-    loss_pi, pi_info, loss_v = update(buffer)
-    print("\n================================================================\nEpoch: {} \nStep: {} \nAveReturn: {} \nLossPi: {} \nLossV: {} \nKLDivergence: {} \n Entropy: {} \nTimeElapsed: {}\n================================================================\n".format(ep+1, st+1, averaged_returns[-1], loss_pi, loss_v, pi_info['kl'], pi_info['ent'], time.time()-start_time))
+        # update actor-critic
+        loss_pi, loss_v, loss_info = ppo.train(replay_buffer.get(), train_iters)
+        print("\n================================================================\nEpoch: {} \nStep: {} \nAveReturn: {} \nLossPi: {} \nLossV: {} \nKLDivergence: {} \nEntropy: {} \nTimeElapsed: {}\n================================================================\n".format(ep+1, st+1, sedimentary_returns[-1], loss_pi, loss_v, loss_info['kl'], loss_info['ent'], time.time()-start_time))
 ################################################################
 
+    # Save returns 
+    np.save(os.path.join(model_dir, 'episodic_returns.npy'), episodic_returns)
+    np.save(os.path.join(model_dir, 'sedimentary_returns.npy'), sedimentary_returns)
+    # plot returns
+    fig, ax = plt.subplots(figsize=(8, 6))
+    fig.suptitle('Averaged Returns')
+    ax.plot(sedimentary_returns)
+    plt.show()
 
-# plot returns
-fig, ax = plt.subplots(figsize=(8, 6))
-fig.suptitle('Averaged Returns')
-ax.plot(averaged_returns)
-plt.show()
 
 # Test trained model
 input("Press ENTER to test lander...")
@@ -357,8 +347,8 @@ for ep in range(num_episodes):
     obs, done, rewards = env.reset(), False, []
     for st in range(num_steps):
         env.render()
-        act, _, _ = ac.step(obs.reshape(1,-1))
-        next_obs, rew, done, info = env.step(act.numpy())
+        act = ppo.act(obs.reshape(1,-1))
+        next_obs, rew, done, info = env.step(act)
         rewards.append(rew)
         # print("\n-\nepisode: {}, step: {} \naction: {} \nobs: {}, \nreward: {}".format(ep+1, st+1, act, obs, rew))
         obs = next_obs.copy()

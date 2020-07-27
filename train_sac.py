@@ -89,7 +89,7 @@ class Actor(tf.keras.Model):
         return action, logp_pi
         
 class SoftActorCritic(tf.keras.Model):
-    def __init__(self, obs_dim, act_dim, act_lim=1, hidden_sizes=(256,256), activation='relu', gamma = 0.99, alpha=0.,
+    def __init__(self, obs_dim, act_dim, act_lim=1, hidden_sizes=(256,256), activation='relu', gamma = 0.99, alpha=0.2,
                  critic_lr=3e-4, actor_lr=3e-4, polyak=0.995, **kwargs):
         super(SoftActorCritic, self).__init__(name='sac', **kwargs)
         # params
@@ -204,7 +204,7 @@ if __name__=='__main__':
     sedimentary_returns = []
     save_freq = 100
     episode_counter = 0
-    model_dir = './training_models/sac'
+    model_dir = './training_models/sac_fixedtemp'
     obs, done, ep_ret, ep_len = env.reset(), False, 0, 0
     for t in range(total_steps):
         # env.render()
