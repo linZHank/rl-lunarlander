@@ -12,8 +12,6 @@ import logging
 
 import tensorflow as tf
 print(tf.__version__)
-import tensorflow_probability as tfp
-tfd = tfp.distributions
 ################################################################
 """
 Unnecessary initial settings
@@ -30,7 +28,7 @@ if gpus:
         print(e)
     # Restrict TensorFlow to only use the first GPU
     try:
-        tf.config.experimental.set_visible_devices(gpus[0], 'GPU')
+        tf.config.experimental.set_visible_devices(gpus[1], 'GPU')
         logical_gpus = tf.config.experimental.list_logical_devices('GPU')
         print(len(gpus), "Physical GPUs,", len(logical_gpus), "Logical GPU")
     except RuntimeError as e:
@@ -156,9 +154,11 @@ if __name__=='__main__':
     total_steps = int(1e6)
     episodic_returns = []
     sedimentary_returns = []
+    episodic_steps = []
     save_freq = 100
     episode_counter = 0
-    model_dir = './training_models/dqn'
+    model_dir = './models/dqn/'+env.spec.id
+    start_time = time.time()
     obs, done, ep_ret, ep_len = env.reset(), False, 0, 0
     for t in range(total_steps):
         # env.render()
@@ -173,10 +173,11 @@ if __name__=='__main__':
             episode_counter += 1
             episodic_returns.append(ep_ret)
             sedimentary_returns.append(sum(episodic_returns)/episode_counter)
-            print("\n====\nEpisode: {} \nEpisodeLength: {} \nTotalSteps: {} \nEpsilon: {} \nEpisodeReturn: {} \nSedimentaryReturn: {}\n====\n".format(episode_counter, ep_len, t+1, dqn.epsilon, ep_ret, sedimentary_returns[-1]))
+            episodic_steps.append(t+1)
+            print("\n====\nEpisode: {} \nEpisodeLength: {} \nTotalSteps: {} \nEpsilon: {} \nEpisodeReturn: {} \nSedimentaryReturn: {} \nTimeElapsed: {} \n====\n".format(episode_counter, ep_len, t+1, dqn.epsilon, ep_ret, sedimentary_returns[-1], time.time()-start_time))
             # save model
             if not episode_counter%save_freq:
-                model_path = os.path.join(model_dir, env.spec.id, 'models', str(episode_counter))
+                model_path = os.path.join(model_dir, str(episode_counter))
                 if not os.path.exists(os.path.dirname(model_path)):
                     os.makedirs(os.path.dirname(model_path))
                 dqn.q.q_net.save(model_path)
@@ -192,8 +193,11 @@ if __name__=='__main__':
     # Save returns 
     np.save(os.path.join(model_dir, 'episodic_returns.npy'), episodic_returns)
     np.save(os.path.join(model_dir, 'sedimentary_returns.npy'), sedimentary_returns)
+    np.save(os.path.join(model_dir, 'episodic_steps.npy'), episodic_steps)
+    with open(os.path.join(model_dir, 'training_time.txt'), 'w') as f:
+        f.write("{}".format(time.time()-start_time))
     # Save final model
-    model_path = os.path.join(model_dir, env.spec.id, 'models', str(episode_counter))
+    model_path = os.path.join(model_dir, str(episode_counter))
     dqn.q.q_net.save(model_path)
     # plot returns
     fig, ax = plt.subplots(figsize=(8, 6))

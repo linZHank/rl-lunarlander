@@ -7,13 +7,15 @@ return_dir_list = [
     sys.path[0] + '/models/dqn/LunarLander-v2',
     sys.path[0] + '/models/ddpg/LunarLanderContinuous-v2',
     sys.path[0] + '/models/ppo/LunarLanderContinuous-v2',
-    sys.path[0] + '/models/ppo_plus_ent/LunarLanderContinuous-v2'
+    sys.path[0] + '/models/ppo_plus_ent/LunarLanderContinuous-v2',
+    sys.path[0] + '/models/sac_fix_ent/LunarLanderContinuous-v2',
+    sys.path[0] + '/models/sac_auto_ent/LunarLanderContinuous-v2'
 ]
-names = ['dqn', 'ddpg', 'ppo', 'ppo_entropy']
-colors = ['limegreen', 'lightcoral', 'purple', 'violet']
+names = ['dqn', 'ddpg', 'ppo', 'ppo_entropy', 'sac_fixed_entropy', 'sac_auto_entropy']
+colors = ['limegreen', 'grey', 'deeppink', 'violet', 'dodgerblue', 'deepskyblue']
 
 ave_rets = np.zeros((len(return_dir_list), int(1e6)))
-fig, ax = plt.subplots()
+fig, ax = plt.subplots(figsize=(10,4))
 x = np.arange(ave_rets.shape[-1])
 
 for i, d in enumerate(return_dir_list):
@@ -27,5 +29,6 @@ for i, d in enumerate(return_dir_list):
 
 ax.grid()
 ax.legend()
+plt.tight_layout()
 plt.show()
 

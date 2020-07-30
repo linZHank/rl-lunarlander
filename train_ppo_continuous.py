@@ -87,7 +87,8 @@ class Critic(tf.keras.Model):
         return tf.squeeze(self.v_net(obs), axis=-1)
 
 class PPOActorCritic(tf.Module):
-    def __init__(self, obs_dim, act_dim, hidden_sizes=(256,256), activation='relu', clip_ratio=0.2, lr_actor=3e-4, lr_critic=1e-3, beta=0.0, target_kl=0.01, **kwargs):
+    def __init__(self, obs_dim, act_dim, hidden_sizes=(256,256), activation='relu', clip_ratio=0.2, lr_actor=3e-4,
+                 lr_critic=1e-3, beta=0.01, target_kl=0.01, **kwargs):
         super(PPOActorCritic, self).__init__(name='ppo', **kwargs)
         # params
         self.clip_ratio = clip_ratio
@@ -276,17 +277,18 @@ if __name__=='__main__':
     # instantiate actor-critic and replay buffer
     obs_dim=env.observation_space.shape[0]
     act_dim=env.action_space.shape[0]
-    ppo = PPOActorCritic(obs_dim=obs_dim, act_dim=act_dim)
+    ppo = PPOActorCritic(obs_dim=obs_dim, act_dim=act_dim, beta=0.)
     replay_buffer = PPOBuffer(obs_dim, act_dim, steps_per_epoch, gamma, lam)
     # create optimizer
     actor_optimizer = tf.keras.optimizers.Adam(learning_rate=3e-4)
     critic_optimizer = tf.keras.optimizers.Adam(learning_rate=1e-3)
     # Prepare for interaction with environment
-    model_dir = './training_models/ppo'
-    start_time = time.time()
+    model_dir = './models/ppo/'+env.spec.id
     obs, ep_ret, ep_len = env.reset(), 0, 0
     episodes, total_steps = 0, 0
     stepwise_rewards, episodic_returns, sedimentary_returns = [], [], []
+    episodic_steps = []
+    start_time = time.time()
     # main loop
     for ep in range(epochs):
         for st in range(steps_per_epoch):
@@ -314,11 +316,12 @@ if __name__=='__main__':
                     episodes += 1
                     episodic_returns.append(ep_ret)
                     sedimentary_returns.append(sum(episodic_returns)/episodes)
+                    episodic_steps.append(total_steps)
                     print("\n====\nTotalSteps: {} \nEpisode: {}, Step: {}, EpReturn: {}, EpLength: {} \n====\n".format(total_steps, episodes, st+1, ep_ret, ep_len))
                 obs, ep_ret, ep_len = env.reset(), 0, 0
         # Save model
         if not ep%save_freq or (ep==epochs-1):
-            model_path = os.path.join(model_dir, env.spec.id, 'models', str(ep))
+            model_path = os.path.join(model_dir, str(ep))
             if not os.path.exists(os.path.dirname(model_path)):
                 os.makedirs(os.path.dirname(model_path))
             ppo.actor.mu_net.save(model_path)
@@ -331,6 +334,9 @@ if __name__=='__main__':
     # Save returns 
     np.save(os.path.join(model_dir, 'episodic_returns.npy'), episodic_returns)
     np.save(os.path.join(model_dir, 'sedimentary_returns.npy'), sedimentary_returns)
+    np.save(os.path.join(model_dir, 'episodic_steps.npy'), episodic_steps)
+    with open(os.path.join(model_dir, 'training_time.txt'), 'w') as f:
+        f.write("{}".format(time.time()-start_time))
     # plot returns
     fig, ax = plt.subplots(figsize=(8, 6))
     fig.suptitle('Averaged Returns')

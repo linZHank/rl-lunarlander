@@ -89,15 +89,17 @@ class Actor(tf.keras.Model):
         return action, logp_pi
         
 class SoftActorCritic(tf.keras.Model):
-    def __init__(self, obs_dim, act_dim, act_lim=1, hidden_sizes=(256,256), activation='relu', gamma = 0.99, alpha=0.2,
-                 critic_lr=3e-4, actor_lr=3e-4, polyak=0.995, **kwargs):
+    def __init__(self, obs_dim, act_dim, act_lim=1, hidden_sizes=(256,256), activation='relu', gamma = 0.99, auto_ent=False,
+                 alpha=0.2, critic_lr=3e-4, actor_lr=3e-4, alpha_lr=3e-4, polyak=0.995, **kwargs):
         super(SoftActorCritic, self).__init__(name='sac', **kwargs)
         # params
         name = 'sac_agent'
-        self.alpha = alpha # entropy temperature
+        self.auto_ent = auto_ent
+        self.target_ent = -np.prod(act_dim) # heuristic
+        self.alpha = alpha # fixed entropy temperature
         self.gamma = gamma # discount rate
         self.polyak = polyak
-        #
+        # models
         self.pi = Actor(obs_dim, act_dim, hidden_sizes, activation, act_lim)
         self.q0 = Critic(obs_dim, act_dim, hidden_sizes, activation) 
         self.q1 = Critic(obs_dim, act_dim, hidden_sizes, activation) 
@@ -105,6 +107,11 @@ class SoftActorCritic(tf.keras.Model):
         self.targ_q1 = Critic(obs_dim, act_dim, hidden_sizes, activation)
         self.critic_optimizer = tf.keras.optimizers.Adam(lr=critic_lr)
         self.actor_optimizer = tf.keras.optimizers.Adam(lr=actor_lr)
+        self.alpha_optimizer = tf.keras.optimizers.Adam(lr=alpha_lr)
+        # variables
+        self._log_alpha = tf.Variable(0.0)
+        self._alpha = tfp.util.DeferredTensor(self._log_alpha, tf.exp)
+
 
     def act(self, obs, deterministic=False):
         a, _ = self.pi(obs, deterministic, False)
@@ -149,6 +156,15 @@ class SoftActorCritic(tf.keras.Model):
             w_q1_upd = w_q1_upd + (1 - self.polyak)*w_q1
             q1_weights_update.append(w_q1_upd)
         self.targ_q1.set_weights(q1_weights_update)
+        # update alpha
+        if self.auto_ent:
+            with tf.GradientTape() as tape:
+                tape.watch([self._log_alpha])
+                _, logp = self.pi(data['obs'])
+                loss_alpha = -tf.math.reduce_mean(self._alpha*logp+self.target_ent)
+            grads_alpha = tape.gradient(loss_alpha, [self._log_alpha])
+            self.alpha_optimizer.apply_gradients(zip(grads_alpha, [self._log_alpha]))
+            self.alpha = self._alpha.numpy()
 
         return loss_q, loss_pi
     
@@ -187,25 +203,28 @@ class ReplayBuffer:
 RANDOM_SEED = 0
 if __name__=='__main__':
     env = gym.make('LunarLanderContinuous-v2')
-    max_episode_steps = env.spec.max_episode_steps
+    sac = SoftActorCritic(obs_dim=8, act_dim=2, auto_ent=False)
     # set seed
     tf.random.set_seed(RANDOM_SEED)
     env.seed(RANDOM_SEED)
     np.random.seed(RANDOM_SEED)
     env.action_space.seed(RANDOM_SEED)
+    # params
+    max_episode_steps = env.spec.max_episode_steps
     batch_size = 100
     update_freq = 50
     update_after = 1000
     warmup_steps = 5000
-    sac = SoftActorCritic(obs_dim=8, act_dim=2)
     replay_buffer = ReplayBuffer(obs_dim=8, act_dim=2, size=int(1e6)) 
     total_steps = int(1e6)
     episodic_returns = []
     sedimentary_returns = []
+    episodic_steps = []
     save_freq = 100
     episode_counter = 0
-    model_dir = './training_models/sac_fixedtemp'
+    model_dir = './models/sac_fix_ent/'+env.spec.id
     obs, done, ep_ret, ep_len = env.reset(), False, 0, 0
+    start_time = time.time()
     for t in range(total_steps):
         # env.render()
         if t < warmup_steps:
@@ -222,10 +241,14 @@ if __name__=='__main__':
             episode_counter += 1
             episodic_returns.append(ep_ret)
             sedimentary_returns.append(sum(episodic_returns)/episode_counter)
-            print("\n====\nEpisode: {} \nEpisodeLength: {} \nTotalSteps: {} \nEpisodeReturn: {} \nSedimentaryReturn: {}\n====\n".format(episode_counter, ep_len, t+1, ep_ret, sedimentary_returns[-1]))
+            episodic_steps.append(t+1)
+            print("\n====\nEpisode: {} \nEpisodeLength: {} \nTotalSteps: {} \nEpisodeReturn: {} \nSedimentaryReturn: {} \nTimeElapsed: {} \n====\n".format(
+                episode_counter, ep_len, t+1, ep_ret, sedimentary_returns[-1],
+                time.time()-start_time
+            ))
             # save model
             if not episode_counter%save_freq:
-                model_path = os.path.join(model_dir, env.spec.id, 'models', str(episode_counter))
+                model_path = os.path.join(model_dir, str(episode_counter))
                 if not os.path.exists(os.path.dirname(model_path)):
                     os.makedirs(os.path.dirname(model_path))
                 sac.pi.policy_net.save(model_path)
@@ -235,13 +258,16 @@ if __name__=='__main__':
             for _ in range(update_freq):
                 minibatch = replay_buffer.sample_batch(batch_size=batch_size)
                 loss_q, loss_pi = sac.train_one_batch(data=minibatch)
-                logging.debug("\nloss_q: {} \nloss_pi: {}".format(loss_q, loss_pi))
+                logging.debug("\nloss_q: {} \nloss_pi: {} \nalpha: {}".format(loss_q, loss_pi, sac.alpha))
 
     # Save returns 
     np.save(os.path.join(model_dir, 'episodic_returns.npy'), episodic_returns)
     np.save(os.path.join(model_dir, 'sedimentary_returns.npy'), sedimentary_returns)
+    np.save(os.path.join(model_dir, 'episodic_steps.npy'), episodic_steps)
+    with open(os.path.join(model_dir, 'training_time.txt'), 'w') as f:
+        f.write("{}".format(time.time()-start_time))
     # Save final model
-    model_path = os.path.join(model_dir, env.spec.id, 'models', str(episode_counter))
+    model_path = os.path.join(model_dir, str(episode_counter))
     sac.pi.policy_net.save(model_path)
     # plot returns
     fig, ax = plt.subplots(figsize=(8, 6))

@@ -191,7 +191,7 @@ if __name__=='__main__':
     episodic_steps = []
     save_freq = 100
     episode_counter = 0
-    model_dir = './training_models/ddpg'
+    model_dir = './models/ddpg/'+env.spec.id
     obs, done, ep_ret, ep_len = env.reset(), False, 0, 0
     for t in range(total_steps):
         # env.render()
@@ -213,7 +213,7 @@ if __name__=='__main__':
             print("\n====\nEpisode: {} \nEpisodeLength: {} \nTotalSteps: {} \nEpisodeReturn: {} \nSedimentaryReturn: {}\n====\n".format(episode_counter, ep_len, t+1, ep_ret, sedimentary_returns[-1]))
             # save model
             if not episode_counter%save_freq:
-                model_path = os.path.join(model_dir, env.spec.id, 'models', str(episode_counter))
+                model_path = os.path.join(model_dir, str(episode_counter))
                 if not os.path.exists(os.path.dirname(model_path)):
                     os.makedirs(os.path.dirname(model_path))
                 ddpg.pi.policy_net.save(model_path)
@@ -230,7 +230,7 @@ if __name__=='__main__':
     np.save(os.path.join(model_dir, 'sedimentary_returns.npy'), sedimentary_returns)
     np.save(os.path.join(model_dir, 'episodic_steps.npy'), episodic_steps)
     # Save final model
-    model_path = os.path.join(model_dir, env.spec.id, 'models', str(episode_counter))
+    model_path = os.path.join(model_dir, str(episode_counter))
     ddpg.pi.policy_net.save(model_path)
     # plot returns
     fig, ax = plt.subplots(figsize=(8, 6))
