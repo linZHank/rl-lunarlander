@@ -150,14 +150,14 @@ if __name__=='__main__':
     decay_period = 500
     warmup_episodes = 50
     dqn = DeepQNet(obs_dim=8, act_dim=4)
-    replay_buffer = ReplayBuffer(obs_dim=8, size=int(1e6)) 
+    replay_buffer = ReplayBuffer(obs_dim=8, size=int(1e5)) 
     total_steps = int(1e6)
     episodic_returns = []
     sedimentary_returns = []
     episodic_steps = []
     save_freq = 100
     episode_counter = 0
-    model_dir = './models/dqn/'+env.spec.id
+    model_dir = './models/dqn_small_buffer/'+env.spec.id
     start_time = time.time()
     obs, done, ep_ret, ep_len = env.reset(), False, 0, 0
     for t in range(total_steps):

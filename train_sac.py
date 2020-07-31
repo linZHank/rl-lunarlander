@@ -93,7 +93,6 @@ class SoftActorCritic(tf.keras.Model):
                  alpha=0.2, critic_lr=3e-4, actor_lr=3e-4, alpha_lr=3e-4, polyak=0.995, **kwargs):
         super(SoftActorCritic, self).__init__(name='sac', **kwargs)
         # params
-        name = 'sac_agent'
         self.auto_ent = auto_ent
         self.target_ent = -np.prod(act_dim) # heuristic
         self.alpha = alpha # fixed entropy temperature
@@ -203,7 +202,7 @@ class ReplayBuffer:
 RANDOM_SEED = 0
 if __name__=='__main__':
     env = gym.make('LunarLanderContinuous-v2')
-    sac = SoftActorCritic(obs_dim=8, act_dim=2, auto_ent=False)
+    sac = SoftActorCritic(obs_dim=8, act_dim=2, auto_ent=False, alpha=0.)
     # set seed
     tf.random.set_seed(RANDOM_SEED)
     env.seed(RANDOM_SEED)
@@ -222,7 +221,7 @@ if __name__=='__main__':
     episodic_steps = []
     save_freq = 100
     episode_counter = 0
-    model_dir = './models/sac_fix_ent/'+env.spec.id
+    model_dir = './models/sac/'+env.spec.id
     obs, done, ep_ret, ep_len = env.reset(), False, 0, 0
     start_time = time.time()
     for t in range(total_steps):

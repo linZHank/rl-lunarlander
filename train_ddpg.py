@@ -41,17 +41,6 @@ logging.basicConfig(format='%(asctime)s %(message)s',level=logging.DEBUG)
 ################################################################
 
 
-################################################################
-"""
-instantiate env
-"""
-env = gym.make('LunarLanderContinuous-v2')
-# env = gym.make('Pendulum-v0')
-obs_dim = env.observation_space.shape[0]
-act_dim = env.action_space.shape[0]
-act_limit = env.action_space.high
-################################################################
-
 
 ################################################################
 class Critic(tf.keras.Model):
@@ -85,9 +74,8 @@ class Actor(tf.keras.Model):
 class DeepDeterministicPolicyGradient(tf.Module):
     def __init__(self, obs_dim, act_dim, act_lim=1, hidden_sizes=(256,256), activation='relu', gamma = 0.99,
                  critic_lr=3e-4, actor_lr=3e-4, polyak=0.995, **kwargs):
-        super(DeepDeterministicPolicyGradient, self).__init__(name='sac', **kwargs)
+        super(DeepDeterministicPolicyGradient, self).__init__(name='ddpg', **kwargs)
         # params
-        name = 'sac_agent'
         self.gamma = gamma # discount rate
         self.polyak = polyak
         #

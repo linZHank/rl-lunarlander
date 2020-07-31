@@ -279,9 +279,6 @@ if __name__=='__main__':
     act_dim=env.action_space.shape[0]
     ppo = PPOActorCritic(obs_dim=obs_dim, act_dim=act_dim, beta=0.)
     replay_buffer = PPOBuffer(obs_dim, act_dim, steps_per_epoch, gamma, lam)
-    # create optimizer
-    actor_optimizer = tf.keras.optimizers.Adam(learning_rate=3e-4)
-    critic_optimizer = tf.keras.optimizers.Adam(learning_rate=1e-3)
     # Prepare for interaction with environment
     model_dir = './models/ppo/'+env.spec.id
     obs, ep_ret, ep_len = env.reset(), 0, 0
