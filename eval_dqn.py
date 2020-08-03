@@ -8,63 +8,26 @@ import tensorflow as tf
 
 import logging
 logging.basicConfig(format='%(asctime)s %(message)s',level=logging.DEBUG)
+from train_dqn import DeepQNet
 
 
 # Create LunarLander env
 env = gym.make('LunarLander-v2')
 
-# # Create Policy Network
-# qnet_active = tf.keras.Sequential(
-#     [
-#         tf.keras.layers.InputLayer(input_shape=env.observation_space.shape),
-#         tf.keras.layers.Dense(128, activation='relu'),
-#         tf.keras.layers.Dense(128, activation='relu'),
-#         tf.keras.layers.Dense(env.action_space.n)
-#     ]
-# )
-# qnet_active.summary()
+# Evaluate
+model_path = './models/dqn/'+env.spec.id+'/2927'
+dqn = DeepQNet(obs_dim=8, act_dim=4)
+dqn.q.q_net = tf.keras.models.load_model(model_path)
+dqn.epsilon = 0.
 
-# # Restore checkpoint
-# optimizer = tf.keras.optimizers.Adam(learning_rate=3e-4)
-# checkpoint_dir = './training_checkpoints/dqn'
-# ckpt = tf.train.Checkpoint(optimizer=optimizer, model=qnet_active)
-# ckpt.restore(tf.train.latest_checkpoint(checkpoint_dir))
-
-def epsilon_greedy(qvals, epsilon):
-    if np.random.uniform() > epsilon:
-        act_id = np.argmax(qvals)
-    else:
-        act_id = np.random.randint(env.action_space.n)
-
-    return act_id
-
-# load model
-model_path = './training_models/dqn/2020-04-24-00-19/1850000.h5'
-qnet_active = tf.keras.models.load_model(model_path)
-# params
-num_episodes = 10
-num_steps = 1000
-epsilon = .01
-ep_rets, ave_rets = [], []
-if __name__ == '__main__':
-    for ep in range(num_episodes):
-        obs, done, rewards = env.reset(), False, []
-        for st in range(num_steps):
-            env.render()
-            qvals = np.squeeze(qnet_active(obs.reshape(1,-1)).numpy())
-            action = epsilon_greedy(qvals, epsilon)
-            next_obs, rew, done, info = env.step(action)
-            rewards.append(rew)
-            logging.info("\n-\nepisode: {}, step: {} \naction: {} \nobs: {}, \nreward: {}".format(ep+1, st+1, action, obs, rew))
-            obs = next_obs.copy()
-            if done:
-                ep_rets.append(sum(rewards))
-                ave_rets.append(sum(ep_rets)/len(ep_rets))
-                logging.info("\n---\nepisode: {} \nepisode return: {}, averaged return: {} \n---\n".format(ep+1, ep_rets[-1], ave_rets[-1]))
-                break
-
-fig, ax = plt.subplots(figsize=(8, 6))
-ax.set_xlabel("Episode")
-ax.set_ylabel("Return")
-ax.plot(ep_rets)
-plt.show()
+for ep in range(10):
+    o, d, ep_ret = env.reset(), False, 0
+    for st in range(env.spec.max_episode_steps):
+        env.render()
+        a = np.squeeze(dqn.act(o.reshape(1,-1)))
+        o2,r,d,_ = env.step(a)
+        ep_ret += r
+        o = o2
+        if d:
+            print("EpReturn: {}".format(ep_ret))
+            break 

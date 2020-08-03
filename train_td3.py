@@ -58,7 +58,7 @@ class Critic(tf.keras.Model):
         return tf.squeeze(qval, axis=-1)
     
 class Actor(tf.keras.Model):
-    def __init__(self, obs_dim, act_dim, hidden_sizes, activation, act_lim, **kwargs):
+    def __init__(self, obs_dim, act_dim, hidden_sizes, activation, act_limit, **kwargs):
         super(Actor, self).__init__(name='actor', **kwargs)
         inputs = tf.keras.Input(shape=(obs_dim,))
         x = tf.keras.layers.Dense(hidden_sizes[0], activation=activation)(inputs)
@@ -66,25 +66,29 @@ class Actor(tf.keras.Model):
             x = tf.keras.layers.Dense(hidden_sizes[i], activation=activation)(x)
         outputs = tf.keras.layers.Dense(act_dim)(x) 
         self.policy_net = tf.keras.Model(inputs=inputs, outputs=outputs)
-        self.act_lim = act_lim
+        self.act_limit = act_limit
 
     def call(self, obs):
-        return self.act_lim*self.policy_net(obs)
+        return self.act_limit*self.policy_net(obs)
         
 class TwinDelayedDDPG(tf.Module):
-    def __init__(self, obs_dim, act_dim, act_lim=1, hidden_sizes=(256,256), activation='relu', gamma = 0.99,
-                 critic_lr=3e-4, actor_lr=3e-4, noise_clip=0.5, target_noise=0.2, policy_delay=2, polyak=0.995, **kwargs):
+    def __init__(self, obs_dim, act_dim, act_limit=1, hidden_sizes=(256,256), activation='relu', gamma = 0.99,
+                 critic_lr=3e-4, actor_lr=3e-4, noise_clip=0.5, target_noise=0.2, policy_delay=2, polyak=0.995,
+                 act_noise=0.1, **kwargs):
         super(TwinDelayedDDPG, self).__init__(name='td3', **kwargs)
         # params
+        self.obs_dim = obs_dim
+        self.act_dim = act_dim
+        self.act_limit = act_limit
         self.target_noise = target_noise
         self.noise_clip = noise_clip
         self.policy_delay = policy_delay
-        self.act_lim = act_lim
         self.gamma = gamma # discount rate
         self.polyak = polyak
-        #
-        self.pi = Actor(obs_dim, act_dim, hidden_sizes, activation, act_lim)
-        self.targ_pi = Actor(obs_dim, act_dim, hidden_sizes, activation, act_lim)
+        self.act_noise = act_noise
+        # networks
+        self.pi = Actor(obs_dim, act_dim, hidden_sizes, activation, act_limit)
+        self.targ_pi = Actor(obs_dim, act_dim, hidden_sizes, activation, act_limit)
         self.q0 = Critic(obs_dim, act_dim, hidden_sizes, activation) 
         self.q1 = Critic(obs_dim, act_dim, hidden_sizes, activation) 
         self.targ_q0 = Critic(obs_dim, act_dim, hidden_sizes, activation)
@@ -93,7 +97,10 @@ class TwinDelayedDDPG(tf.Module):
         self.actor_optimizer = tf.keras.optimizers.Adam(lr=actor_lr)
 
     def act(self, obs):
-        return self.pi(obs).numpy()
+        a = self.pi(obs).numpy()
+        a += self.act_noise*np.random.randn(self.act_dim)
+        
+        return np.clip(a, -self.act_limit, self.act_limit)
 
     def train_one_batch(self, data, timer):
         # update critic
@@ -106,7 +113,7 @@ class TwinDelayedDDPG(tf.Module):
             eps = tf.random.normal(shape=targ_a.shape)*self.target_noise
             eps = tf.clip_by_value(eps, -self.noise_clip, self.noise_clip)
             na = targ_a + eps
-            na = tf.clip_by_value(na, -self.act_lim, self.act_lim)
+            na = tf.clip_by_value(na, -self.act_limit, self.act_limit)
             nqval0 = self.targ_q0(data['nobs'], na)
             nqval1 = self.targ_q1(data['nobs'], na)
             pessi_nqval = tf.math.minimum(nqval0, nqval1) # pessimistic value
@@ -120,31 +127,31 @@ class TwinDelayedDDPG(tf.Module):
         if not timer%self.policy_delay:
             with tf.GradientTape() as tape:
                 tape.watch(self.pi.trainable_weights)
-                loss_pi = -tf.math.reduce_mean(self.q1(data['obs'], self.pi(data['obs'])))
+                loss_pi = -tf.math.reduce_mean(self.q0(data['obs'], self.pi(data['obs'])))
             grads_actor = tape.gradient(loss_pi, self.pi.trainable_weights)
             self.actor_optimizer.apply_gradients(zip(grads_actor, self.pi.trainable_weights))
+            # Polyak average update target Q-nets
+            q0_weights_update = []
+            for w_q0, w_targ_q0 in zip(self.q0.get_weights(), self.targ_q0.get_weights()):
+                w_q0_upd = self.polyak*w_targ_q0
+                w_q0_upd = w_q0_upd + (1 - self.polyak)*w_q0
+                q0_weights_update.append(w_q0_upd)
+            self.targ_q0.set_weights(q0_weights_update)
+            q1_weights_update = []
+            for w_q1, w_targ_q1 in zip(self.q1.get_weights(), self.targ_q1.get_weights()):
+                w_q1_upd = self.polyak*w_targ_q1
+                w_q1_upd = w_q1_upd + (1 - self.polyak)*w_q1
+                q1_weights_update.append(w_q1_upd)
+            self.targ_q1.set_weights(q1_weights_update)
+            # Polyak average update target policy-nets
+            pi_weights_update = []
+            for w_pi, w_targ_pi in zip(self.pi.get_weights(), self.targ_pi.get_weights()):
+                w_pi_upd = self.polyak*w_targ_pi
+                w_pi_upd = w_pi_upd + (1 - self.polyak)*w_pi
+                pi_weights_update.append(w_pi_upd)
+            self.targ_pi.set_weights(pi_weights_update)
         else:
             loss_pi = 0.
-        # Polyak average update target Q-nets
-        q0_weights_update = []
-        for w_q0, w_targ_q0 in zip(self.q0.get_weights(), self.targ_q0.get_weights()):
-            w_q0_upd = self.polyak*w_targ_q0
-            w_q0_upd = w_q0_upd + (1 - self.polyak)*w_q0
-            q0_weights_update.append(w_q0_upd)
-        self.targ_q0.set_weights(q0_weights_update)
-        q1_weights_update = []
-        for w_q1, w_targ_q1 in zip(self.q1.get_weights(), self.targ_q1.get_weights()):
-            w_q1_upd = self.polyak*w_targ_q1
-            w_q1_upd = w_q1_upd + (1 - self.polyak)*w_q1
-            q1_weights_update.append(w_q1_upd)
-        self.targ_q1.set_weights(q1_weights_update)
-        # Polyak average update target policy-nets
-        pi_weights_update = []
-        for w_pi, w_targ_pi in zip(self.pi.get_weights(), self.targ_pi.get_weights()):
-            w_pi_upd = self.polyak*w_targ_pi
-            w_pi_upd = w_pi_upd + (1 - self.polyak)*w_pi
-            pi_weights_update.append(w_pi_upd)
-        self.targ_pi.set_weights(pi_weights_update)
 
         return loss_q, loss_pi
 ################################################################

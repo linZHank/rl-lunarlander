@@ -274,16 +274,16 @@ if __name__=='__main__':
     ax.plot(sedimentary_returns)
     plt.show()
 
-# Test
-input("Press ENTER to test lander...")
-for ep in range(10):
-    o, d, ep_ret = env.reset(), False, 0
-    for st in range(max_episode_steps):
-        env.render()
-        a = np.squeeze(sac.act(o.reshape(1,-1), deterministic=True))
-        o2,r,d,_ = env.step(a)
-        ep_ret += r
-        o = o2
-        if d:
-            print("EpReturn: {}".format(ep_ret))
-            break 
+    # Test
+    input("Press ENTER to test lander...")
+    for ep in range(10):
+        o, d, ep_ret = env.reset(), False, 0
+        for st in range(max_episode_steps):
+            env.render()
+            a = np.squeeze(sac.act(o.reshape(1,-1), deterministic=True))
+            o2,r,d,_ = env.step(a)
+            ep_ret += r
+            o = o2
+            if d:
+                print("EpReturn: {}".format(ep_ret))
+                break 

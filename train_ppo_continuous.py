@@ -341,22 +341,22 @@ if __name__=='__main__':
     plt.show()
 
 
-# Test trained model
-input("Press ENTER to test lander...")
-num_episodes = 10
-num_steps = env.spec.max_episode_steps
-ep_rets, ave_rets = [], []
-for ep in range(num_episodes):
-    obs, done, rewards = env.reset(), False, []
-    for st in range(num_steps):
-        env.render()
-        act = ppo.act(obs.reshape(1,-1))
-        next_obs, rew, done, info = env.step(act)
-        rewards.append(rew)
-        # print("\n-\nepisode: {}, step: {} \naction: {} \nobs: {}, \nreward: {}".format(ep+1, st+1, act, obs, rew))
-        obs = next_obs.copy()
-        if done:
-            ep_rets.append(sum(rewards))
-            ave_rets.append(sum(ep_rets)/len(ep_rets))
-            print("\n---\nepisode: {} \nepisode return: {}, averaged return: {} \n---\n".format(ep+1, ep_rets[-1], ave_rets[-1]))
-            break
+    # Test trained model
+    input("Press ENTER to test lander...")
+    num_episodes = 10
+    num_steps = env.spec.max_episode_steps
+    ep_rets, ave_rets = [], []
+    for ep in range(num_episodes):
+        obs, done, rewards = env.reset(), False, []
+        for st in range(num_steps):
+            env.render()
+            act = ppo.act(obs.reshape(1,-1))
+            next_obs, rew, done, info = env.step(act)
+            rewards.append(rew)
+            # print("\n-\nepisode: {}, step: {} \naction: {} \nobs: {}, \nreward: {}".format(ep+1, st+1, act, obs, rew))
+            obs = next_obs.copy()
+            if done:
+                ep_rets.append(sum(rewards))
+                ave_rets.append(sum(ep_rets)/len(ep_rets))
+                print("\n---\nepisode: {} \nepisode return: {}, averaged return: {} \n---\n".format(ep+1, ep_rets[-1], ave_rets[-1]))
+                break

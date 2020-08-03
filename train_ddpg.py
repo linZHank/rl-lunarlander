@@ -58,7 +58,7 @@ class Critic(tf.keras.Model):
         return tf.squeeze(qval, axis=-1)
     
 class Actor(tf.keras.Model):
-    def __init__(self, obs_dim, act_dim, hidden_sizes, activation, act_lim, **kwargs):
+    def __init__(self, obs_dim, act_dim, hidden_sizes, activation, act_limit, **kwargs):
         super(Actor, self).__init__(name='actor', **kwargs)
         inputs = tf.keras.Input(shape=(obs_dim,))
         x = tf.keras.layers.Dense(hidden_sizes[0], activation=activation)(inputs)
@@ -66,28 +66,35 @@ class Actor(tf.keras.Model):
             x = tf.keras.layers.Dense(hidden_sizes[i], activation=activation)(x)
         outputs = tf.keras.layers.Dense(act_dim)(x) 
         self.policy_net = tf.keras.Model(inputs=inputs, outputs=outputs)
-        self.act_lim = act_lim
+        self.act_limit = act_limit
 
     def call(self, obs):
-        return self.act_lim*self.policy_net(obs)
+        return self.act_limit*self.policy_net(obs)
         
 class DeepDeterministicPolicyGradient(tf.Module):
-    def __init__(self, obs_dim, act_dim, act_lim=1, hidden_sizes=(256,256), activation='relu', gamma = 0.99,
-                 critic_lr=3e-4, actor_lr=3e-4, polyak=0.995, **kwargs):
+    def __init__(self, obs_dim, act_dim, act_limit=1, hidden_sizes=(256,256), activation='relu', gamma = 0.99,
+                 critic_lr=3e-4, actor_lr=3e-4, polyak=0.995, act_noise=.1, **kwargs):
         super(DeepDeterministicPolicyGradient, self).__init__(name='ddpg', **kwargs)
         # params
+        self.obs_dim = obs_dim
+        self.act_dim = act_dim
+        self.act_limit = act_limit
         self.gamma = gamma # discount rate
         self.polyak = polyak
+        self.act_noise = act_noise # noise level or variance
         #
-        self.pi = Actor(obs_dim, act_dim, hidden_sizes, activation, act_lim)
-        self.targ_pi = Actor(obs_dim, act_dim, hidden_sizes, activation, act_lim)
+        self.pi = Actor(obs_dim, act_dim, hidden_sizes, activation, act_limit)
+        self.targ_pi = Actor(obs_dim, act_dim, hidden_sizes, activation, act_limit)
         self.q = Critic(obs_dim, act_dim, hidden_sizes, activation) 
         self.targ_q = Critic(obs_dim, act_dim, hidden_sizes, activation)
         self.critic_optimizer = tf.keras.optimizers.Adam(lr=critic_lr)
         self.actor_optimizer = tf.keras.optimizers.Adam(lr=actor_lr)
 
     def act(self, obs):
-        return self.pi(obs).numpy()
+        a = self.pi(obs).numpy()
+        a += self.act_noise*np.random.randn(self.act_dim)
+        
+        return np.clip(a, -self.act_limit, self.act_limit)
 
     def train_one_batch(self, data):
         # update critic
