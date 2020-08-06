@@ -73,7 +73,7 @@ class Actor(tf.keras.Model):
         
 class TwinDelayedDDPG(tf.Module):
     def __init__(self, obs_dim, act_dim, act_limit=1, hidden_sizes=(256,256), activation='relu', gamma = 0.99,
-                 critic_lr=3e-4, actor_lr=3e-4, noise_clip=0.5, target_noise=0.2, policy_delay=2, polyak=0.995,
+                 critic_lr=1e-4, actor_lr=1e-4, noise_clip=0.5, target_noise=0.2, policy_delay=2, polyak=0.995,
                  act_noise=0.1, **kwargs):
         super(TwinDelayedDDPG, self).__init__(name='td3', **kwargs)
         # params
