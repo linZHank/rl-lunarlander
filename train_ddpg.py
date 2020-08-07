@@ -73,7 +73,7 @@ class Actor(tf.keras.Model):
         
 class DeepDeterministicPolicyGradient(tf.Module):
     def __init__(self, obs_dim, act_dim, act_limit=1, hidden_sizes=(256,256), activation='relu', gamma = 0.99,
-                 critic_lr=3e-4, actor_lr=3e-4, polyak=0.995, act_noise=.1, **kwargs):
+                 critic_lr=1e-4, actor_lr=1e-4, polyak=0.995, act_noise=.1, **kwargs):
         super(DeepDeterministicPolicyGradient, self).__init__(name='ddpg', **kwargs)
         # params
         self.obs_dim = obs_dim
@@ -101,7 +101,7 @@ class DeepDeterministicPolicyGradient(tf.Module):
         with tf.GradientTape() as tape:
             tape.watch(self.q.trainable_weights)
             pred_qval = self.q(data['obs'], data['act'])
-            targ_qval = data['rew'] + self.gamma*(1-data['done'])*(self.targ_q(data['nobs'], self.targ_pi(data['nobs'])))
+            targ_qval = data['rew'] + self.gamma*(1-data['done'])*(self.targ_q(data['nobs'],self.targ_pi(data['nobs'])))
             loss_q = tf.keras.losses.MSE(y_true=targ_qval, y_pred=pred_qval)
         grads_critic = tape.gradient(loss_q, self.q.trainable_weights)
         self.critic_optimizer.apply_gradients(zip(grads_critic, self.q.trainable_weights))
@@ -176,9 +176,9 @@ if __name__=='__main__':
     # params
     max_episode_steps = env.spec.max_episode_steps
     batch_size = 100
-    update_freq = 50
+    update_freq = 100
     update_after = 1000
-    warmup_steps = 5000
+    warmup_steps = 10000
     replay_buffer = ReplayBuffer(obs_dim=8, act_dim=2, size=int(1e6)) 
     total_steps = int(1e6)
     episodic_returns = []
