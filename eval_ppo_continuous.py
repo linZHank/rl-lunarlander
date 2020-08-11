@@ -31,7 +31,8 @@ for ep in range(num_episodes):
     obs, done, rewards = env.reset(), False, []
     for st in range(num_steps):
         env.render()
-        act = ppo.act(obs.reshape(1,-1))
+        # act = ppo.act(obs.reshape(1,-1))
+        act = ppo.actor._distribution(obs.reshape(1,-1)).mean().numpy()
         next_obs, rew, done, info = env.step(act)
         rewards.append(rew)
         # print("\n-\nepisode: {}, step: {} \naction: {} \nobs: {}, \nreward: {}".format(ep+1, st+1, act, obs, rew))

@@ -72,8 +72,8 @@ class Actor(tf.keras.Model):
         return self.act_limit*self.policy_net(obs)
         
 class DeepDeterministicPolicyGradient(tf.Module):
-    def __init__(self, obs_dim, act_dim, act_limit=1, hidden_sizes=(256,256), activation='relu', gamma = 0.99,
-                 critic_lr=1e-4, actor_lr=1e-4, polyak=0.995, act_noise=.1, **kwargs):
+    def __init__(self, obs_dim, act_dim, act_limit=1, hidden_sizes=(128,128), activation='tanh', gamma = 0.99,
+                 critic_lr=1e-5, actor_lr=1e-6, polyak=0.995, act_noise=.1, **kwargs):
         super(DeepDeterministicPolicyGradient, self).__init__(name='ddpg', **kwargs)
         # params
         self.obs_dim = obs_dim
@@ -177,7 +177,7 @@ if __name__=='__main__':
     max_episode_steps = env.spec.max_episode_steps
     batch_size = 100
     update_freq = 100
-    update_after = 1000
+    update_after = 2000
     warmup_steps = 10000
     replay_buffer = ReplayBuffer(obs_dim=8, act_dim=2, size=int(1e6)) 
     total_steps = int(1e6)
@@ -215,7 +215,7 @@ if __name__=='__main__':
             # reset env
             obs, done, ep_ret, ep_len = env.reset(), False, 0, 0
         if not t%update_freq and t>=update_after:
-            for _ in range(update_freq):
+            for _ in range(int(update_freq/2)):
                 minibatch = replay_buffer.sample_batch(batch_size=batch_size)
                 loss_q, loss_pi = ddpg.train_one_batch(data=minibatch)
                 logging.debug("\nloss_q: {} \nloss_pi: {}".format(loss_q, loss_pi))
