@@ -6,7 +6,6 @@ import numpy as np
 import logging
 import tensorflow_probability as tfp
 tfd = tfp.distributions
-logging.basicConfig(format='%(asctime)s %(message)s',level=logging.DEBUG)
 import pdb
 
 
@@ -32,6 +31,8 @@ if gpus:
     except RuntimeError as e:
         # Visible devices must be set before GPUs have been initialized
         print(e)
+# set log level
+logging.basicConfig(format='%(asctime)s %(message)s',level=logging.DEBUG)
 ################################################################
 
 
@@ -43,14 +44,36 @@ def mlp(dim_inputs, dim_outputs, activation, output_activation=None):
     # inputs
     inputs = tf.keras.Input(shape=(dim_inputs,), name='input')
     # features
-    features = tf.keras.layers.Dense(64, activation=activation)(inputs)
-    features = tf.keras.layers.Dense(64, activation=activation)(features)
+    features = tf.keras.layers.Dense(256, activation=activation)(inputs)
+    features = tf.keras.layers.Dense(256, activation=activation)(features)
     # outputs
     outputs = tf.keras.layers.Dense(dim_outputs, activation=output_activation)(features)
 
     return tf.keras.Model(inputs=inputs, outputs=outputs)
 
-class Actor(tf.Module):
+class CategoricalActor(tf.keras.Model):
+
+    def __init__(self, dim_obs, dim_act, **kwargs):
+        super(CategoricalActor, self).__init__(name='categorical_actor', **kwargs)
+        self.logits_net = mlp(dim_inputs=dim_obs, dim_outputs=dim_act, activation='tanh')
+
+    def _distribution(self, obs):
+        logits = self.logits_net(obs)
+
+        return tfd.Categorical(logits=logits)
+
+    def _log_prob_from_distribution(self, pi, act):
+        return pi.log_prob(act)
+
+    def __call__(self, obs, act=None):
+        pi = self._distribution(obs)
+        logp_a = None
+        if act is not None:
+            logp_a = self._log_prob_from_distribution(pi, np.squeeze(act))
+
+        return pi, logp_a
+
+class GaussianActor(tf.Module):
     def __init__(self, dim_obs, dim_act):
         super().__init__()
         self.log_std = tf.Variable(initial_value=-0.5*np.ones(dim_act, dtype=np.float32))
@@ -65,11 +88,15 @@ class Actor(tf.Module):
     def _log_prob_from_distribution(self, pi, act):
         return tf.math.reduce_sum(pi.log_prob(act), axis=-1)
 
-    def __call__(self, obs, act=None):
+    def call(self, obs, act=None):
+        # def log_normal_pdf(sample, mean, log_std, raxis=1):
+        #     log2pi = tf.math.log(2.*np.pi)
+        #     return tf.reduce_sum(-.5*(((sample-mean)*tf.math.exp(-log_std))**2 + 2*log_std + log2pi), axis=raxis)
         pi = self._distribution(obs)
         logp_a = None
         if act is not None:
             logp_a = self._log_prob_from_distribution(pi, act)
+            
 
         return pi, logp_a
 class Critic(tf.Module):
