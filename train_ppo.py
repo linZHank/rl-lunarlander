@@ -328,10 +328,15 @@ if __name__=='__main__':
                 obs, ep_ret, ep_len = env.reset(), 0, 0
         # Save model
         if not ep%save_freq or (ep==epochs-1):
-            model_path = os.path.join(model_dir, str(ep))
-            if not os.path.exists(os.path.dirname(model_path)):
-                os.makedirs(os.path.dirname(model_path))
-            agent.actor.mean_net.save(model_path)
+            mean_path = os.path.join(model_dir, 'actor', str(ep))
+            if not os.path.exists(os.path.dirname(mean_path)):
+                os.makedirs(os.path.dirname(mean_path))
+            val_path = os.path.join(model_dir, 'critic', str(ep))
+            if not os.path.exists(os.path.dirname(val_path)):
+                os.makedirs(os.path.dirname(val_path))
+            agent.actor.mean_net.save(mean_path)
+            np.save(model_dir+'/actor/'+'log_std.npy', agent.actor.log_std.numpy())
+            agent.critic.val_net.save(val_path)
 
         # update actor-critic
         loss_pi, loss_v, loss_info = agent.train(replay_buffer.get(), train_iters)
