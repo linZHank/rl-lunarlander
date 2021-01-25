@@ -1,11 +1,9 @@
 """ 
-A PPO type agent class for pe env 
+A PPO type agent class for LunarLander env 
 """
 import tensorflow as tf
 import numpy as np
 import logging
-import tensorflow_probability as tfp
-tfd = tfp.distributions
 import pdb
 
 
@@ -36,151 +34,181 @@ logging.basicConfig(format='%(asctime)s %(message)s',level=logging.DEBUG)
 ################################################################
 
 
-def mlp(dim_inputs, dim_outputs, activation, output_activation=None):
-    """
-    Take inputs of obs, output according to output_size
-    Input should include two dimensions
-    """
-    # inputs
-    inputs = tf.keras.Input(shape=(dim_inputs,), name='input')
-    # features
-    features = tf.keras.layers.Dense(256, activation=activation)(inputs)
-    features = tf.keras.layers.Dense(256, activation=activation)(features)
-    # outputs
-    outputs = tf.keras.layers.Dense(dim_outputs, activation=output_activation)(features)
-
-    return tf.keras.Model(inputs=inputs, outputs=outputs)
-
 class CategoricalActor(tf.keras.Model):
 
-    def __init__(self, dim_obs, dim_act, **kwargs):
+    def __init__(self, dim_obs, num_act, **kwargs):
         super(CategoricalActor, self).__init__(name='categorical_actor', **kwargs)
-        self.logits_net = mlp(dim_inputs=dim_obs, dim_outputs=dim_act, activation='tanh')
+        self.dim_obs=dim_obs
+        self.num_act=num_act
+        self.policy_net = tf.keras.Sequential(
+            [
+                tf.keras.layers.InputLayer(input_shape=dim_obs, name='actor_inputs'),
+                tf.keras.layers.Dense(256, activation='relu'),
+                tf.keras.layers.Dense(256, activation='relu'),
+                tf.keras.layers.Dense(num_act, activation='softmax', name='actor_outputs')
+            ]
+        )
 
-    def _distribution(self, obs):
-        logits = self.logits_net(obs)
 
-        return tfd.Categorical(logits=logits)
+    @tf.function
+    def logprob(self, obs, act):
+        pmf = self.call(obs) # PMF
+        act_oh = tf.squeeze(tf.one_hot(tf.cast(act,tf.int32), self.num_act))
+        p_a = tf.math.reduce_sum(tf.math.multiply(pmf, act_oh), axis=-1)
+        logp_a = tf.squeeze(tf.math.log(p_a))
+        return pmf, logp_a
 
-    def _log_prob_from_distribution(self, pi, act):
-        return pi.log_prob(act)
+    @tf.function
+    def call(self, obs):
+        pmf = self.policy_net(obs)
+        return pmf
 
-    def __call__(self, obs, act=None):
-        pi = self._distribution(obs)
-        logp_a = None
-        if act is not None:
-            logp_a = self._log_prob_from_distribution(pi, np.squeeze(act))
+# class GaussianActor(tf.Module):
+#     def __init__(self, dim_obs, dim_act):
+#         super().__init__()
+#         self.log_std = tf.Variable(initial_value=-0.5*np.ones(dim_act, dtype=np.float32))
+#         self.mu_net = mlp(dim_inputs=dim_obs, dim_outputs=dim_act, activation='relu')
+# 
+#     def _distribution(self, obs):
+#         mu = tf.squeeze(self.mu_net(obs))
+#         std = tf.math.exp(self.log_std)
+# 
+#         return tfd.Normal(loc=mu, scale=std)
+# 
+#     def _log_prob_from_distribution(self, pi, act):
+#         return tf.math.reduce_sum(pi.log_prob(act), axis=-1)
+# 
+#     def call(self, obs, act=None):
+#         # def log_normal_pdf(sample, mean, log_std, raxis=1):
+#         #     log2pi = tf.math.log(2.*np.pi)
+#         #     return tf.reduce_sum(-.5*(((sample-mean)*tf.math.exp(-log_std))**2 + 2*log_std + log2pi), axis=raxis)
+#         pi = self._distribution(obs)
+#         logp_a = None
+#         if act is not None:
+#             logp_a = self._log_prob_from_distribution(pi, act)
+#             
+# 
+#         return pi, logp_a
 
-        return pi, logp_a
+class Critic(tf.keras.Model):
+    def __init__(self, dim_obs, **kwargs):
+        super(Critic, self).__init__(name='critic', **kwargs)
+        self.value_net = tf.keras.Sequential(
+            [
+                tf.keras.layers.InputLayer(input_shape=dim_obs, name='critic_inputs'),
+                tf.keras.layers.Dense(256, activation='relu'),
+                tf.keras.layers.Dense(256, activation='relu'),
+                tf.keras.layers.Dense(1, activation=None, name='critic_outputs')
+            ]
+        )
 
-class GaussianActor(tf.Module):
-    def __init__(self, dim_obs, dim_act):
-        super().__init__()
-        self.log_std = tf.Variable(initial_value=-0.5*np.ones(dim_act, dtype=np.float32))
-        self.mu_net = mlp(dim_inputs=dim_obs, dim_outputs=dim_act, activation='relu')
-
-    def _distribution(self, obs):
-        mu = tf.squeeze(self.mu_net(obs))
-        std = tf.math.exp(self.log_std)
-
-        return tfd.Normal(loc=mu, scale=std)
-
-    def _log_prob_from_distribution(self, pi, act):
-        return tf.math.reduce_sum(pi.log_prob(act), axis=-1)
-
-    def call(self, obs, act=None):
-        # def log_normal_pdf(sample, mean, log_std, raxis=1):
-        #     log2pi = tf.math.log(2.*np.pi)
-        #     return tf.reduce_sum(-.5*(((sample-mean)*tf.math.exp(-log_std))**2 + 2*log_std + log2pi), axis=raxis)
-        pi = self._distribution(obs)
-        logp_a = None
-        if act is not None:
-            logp_a = self._log_prob_from_distribution(pi, act)
-            
-
-        return pi, logp_a
-class Critic(tf.Module):
-    def __init__(self, dim_obs):
-        super().__init__()
-        self.val_net = mlp(dim_inputs=dim_obs, dim_outputs=1, activation='relu')
-
-    def __call__(self, obs):
-        return tf.squeeze(self.val_net(obs), axis=-1)
+    @tf.function
+    def call(self, obs):
+        return self.value_net(obs)
 
 class PPOAgent:
-    def __init__(self, name='ppo_agent', dim_obs=8, dim_act=2, clip_ratio=0.2, lr_actor=3e-4,
-                 lr_critic=1e-3, target_kl=0.01):
+    def __init__(self, name='ppo_agent', continuous=False, dim_obs=8, num_act=4, dim_act=1, clip_ratio=0.2, lr_actor=1e-4, lr_critic=1e-3, target_kl=0.01, beta=0.001):
+        # params
+        self.continuous=continuous
         self.clip_ratio = clip_ratio
-        self.actor = Actor(dim_obs, dim_act)
+        self.dim_obs = dim_obs
+        self.dim_act = dim_act
+        self.beta = beta
+        self.target_kl = target_kl
+        # modules
+        self.actor = CategoricalActor(dim_obs, num_act)
         self.critic = Critic(dim_obs)
         self.actor_optimizer = tf.keras.optimizers.Adam(learning_rate=lr_actor)
         self.critic_optimizer = tf.keras.optimizers.Adam(learning_rate=lr_critic)
-        self.actor_loss_metric = tf.keras.metrics.Mean()
-        self.critic_loss_metric = tf.keras.metrics.Mean()
-        self.target_kl = target_kl
 
-    def pi_given_state(self, obs):
-        with tf.GradientTape() as t:
-            with t.stop_recording():
-                pi = self.actor._distribution(obs) # policy distribution (Gaussian)
-                act = pi.sample()
-                logp_a = self.actor._log_prob_from_distribution(pi, act)
-                val = tf.squeeze(self.critic(obs), axis=-1)
+    def make_decision(self, obs):
+        prob = self.actor(obs)
+        act = tf.squeeze(tf.random.categorical(logits=prob, num_samples=1))
+        logp_a = tf.squeeze(self.actor.logprob(obs,act))
+        val = tf.squeeze(self.critic(obs))
 
         return act.numpy(), val.numpy(), logp_a.numpy()
 
-    def train(self, batched_actor_dataset, batched_critic_dataset, num_epochs):
+    def train(self, data, epochs):
+    
+        @tf.function
+        def categorical_entropy(pmf):
+            return tf.math.reduce_sum(-pmf*tf.math.log(pmf), axis=-1)
+
+        @tf.function
+        def normal_entropy(stddev):
+            return .5*tf.math.log(2.*np.pi*np.e*stddev**2)
+
         # update actor
-        for epch in range(num_epochs):
-            logging.debug("Staring actor epoch: {}".format(epch))
-            ep_kl = tf.convert_to_tensor([]) # kl-divergence storage
+        for ep in range(epochs):
+            logging.debug("Staring actor training epoch: {}".format(ep+1))
+            ep_loss_pi = []
+            ep_kld = tf.convert_to_tensor([]) # kl-divergence storage
             ep_ent = tf.convert_to_tensor([]) # entropy storage
-            for step, batch in enumerate(batched_actor_dataset):
-                with tf.GradientTape() as tape:
-                    tape.watch(self.actor.trainable_variables)
-                    pi, logp = self.actor(batch['obs'], batch['act']) # img, odom, act
-                    ratio = tf.math.exp(logp - batch['logp']) # pi/old_pi
-                    clip_adv = tf.math.multiply(tf.clip_by_value(ratio, 1-self.clip_ratio, 1+self.clip_ratio),
-                                                batch['adv'])
-                    obj = tf.math.minimum(tf.math.multiply(ratio, batch['adv']), clip_adv) # -.01*ent
-                    loss_pi = -tf.math.reduce_mean(obj)
-                    approx_kl = batch['logp'] - logp
-                    ent = tf.math.reduce_sum(pi.entropy(), axis=-1)
-                # gradient descent actor weights
-                grads_actor = tape.gradient(loss_pi, self.actor.trainable_variables)
-                self.actor_optimizer.apply_gradients(zip(grads_actor, self.actor.trainable_variables))
-                self.actor_loss_metric(loss_pi)
-                # record kl-divergence and entropy
-                ep_kl = tf.concat([ep_kl, approx_kl], axis=0)
-                ep_ent = tf.concat([ep_ent, ent], axis=0)
-                # log loss_pi
-                if not step%100:
-                    logging.debug("pi update step {}: mean_loss = {}".format(step, self.actor_loss_metric.result()))
+            with tf.GradientTape() as tape:
+                tape.watch(self.actor.trainable_variables)
+                pi, logp = self.actor.logprob(data['obs'], data['act'])
+                ratio = tf.math.exp(logp - data['logp']) # pi/old_pi
+                clip_adv = tf.math.multiply(tf.clip_by_value(ratio, 1-self.clip_ratio, 1+self.clip_ratio), data['adv'])
+                approx_kld = data['logp'] - logp
+                ent = categorical_entropy(pi)
+                obj = tf.math.minimum(ratio*data['adv'], clip_adv) + self.beta*ent
+                loss_pi = -tf.math.reduce_mean(obj)
+            # gradient descent actor weights
+            grads_actor = tape.gradient(loss_pi, self.actor.trainable_variables)
+            self.actor_optimizer.apply_gradients(zip(grads_actor, self.actor.trainable_variables))
+            ep_loss_pi.append(loss_pi)
+            ep_kld = tf.concat([ep_kld, approx_kld], axis=0)
+            ep_ent = tf.concat([ep_ent, ent], axis=0)
             # log epoch
-            kl = tf.math.reduce_mean(ep_kl)
-            entropy = tf.math.reduce_mean(ep_ent)
-            logging.debug("Epoch :{} \nLoss: {} \nEntropy: {} \nKLDivergence: {}".format(
-                epch+1,
-                self.actor_loss_metric.result(),
-                entropy,
-                kl
+            mean_loss_pi = tf.math.reduce_mean(ep_loss_pi)
+            mean_ent = tf.math.reduce_mean(ep_ent)
+            mean_kld = tf.math.reduce_mean(ep_kld)
+            logging.info("\n----Actor Training----\nEpoch :{} \nLoss: {} \nEntropy: {} \nKLDivergence: {}".format(
+                ep+1,
+                mean_loss_pi,
+                mean_ent,
+                mean_kld
             ))
             # early cutoff due to large kl-divergence
-            if kl > 1.5*self.target_kl:
-                logging.warning("Early stopping at epoch {} due to reaching max kl-divergence.".format(epch+1))
+            if mean_kld > self.target_kl:
+                logging.warning("Early stopping at epoch {} due to reaching max kl-divergence.".format(ep+1))
                 break
         # update critic
-        for epch in range(num_epochs):
-            logging.debug("Starting critic epoch: {}".format(epch))
-            for step, batch in enumerate(batched_critic_dataset):
-                with tf.GradientTape() as tape:
-                    tape.watch(self.critic.trainable_variables)
-                    loss_v = tf.keras.losses.MSE(batch['ret'], self.critic(batch['obs']))
-                # gradient descent critic weights
-                grads_critic = tape.gradient(loss_v, self.critic.trainable_variables)
-                self.critic_optimizer.apply_gradients(zip(grads_critic, self.critic.trainable_variables))
-                self.critic_loss_metric(loss_v)
-                # log loss_v
-                if not step%100:
-                    logging.debug("v update step {}: mean_loss = {}".format(step, self.critic_loss_metric.result()))
+        for ep in range(epochs):
+            logging.debug("Starting critic training epoch: {}".format(ep+1))
+            ep_loss_val = []
+            with tf.GradientTape() as tape:
+                tape.watch(self.critic.trainable_variables)
+                loss_val = tf.keras.losses.MSE(data['ret'], self.critic(data['obs']))
+            # gradient descent critic weights
+            grads_critic = tape.gradient(loss_val, self.critic.trainable_variables)
+            self.critic_optimizer.apply_gradients(zip(grads_critic, self.critic.trainable_variables))
+            ep_loss_val.append(loss_val)
+            # log loss_v
+            mean_loss_val = tf.math.reduce_mean(ep_loss_val)
+            logging.info("\n----Critic Training----\nEpoch :{} \nLoss: {}".format(
+                ep+1,
+                mean_loss_val
+            ))
+
+        return mean_loss_pi, mean_loss_val, dict(kld=mean_kld, entropy=mean_ent)
         
+
+# Uncomment following for testing the PPO agent
+# agent = PPOAgent(8,4)
+# o = np.random.uniform(-5,5,(10,8))
+# a = np.random.randint(0,4,(10,))
+# r = np.random.uniform(-1,4,(10,))
+# l = np.random.uniform(-2,0,(10,))
+# ad = np.random.normal(4,1,(10,))
+# d = dict(
+#     obs=o,
+#     act=a,
+#     ret=r,
+#     adv=ad,
+#     logp=l
+# )
+# data = {k: tf.convert_to_tensor(v, dtype=tf.float32) for k,v in d.items()}
+# 
+# lp,lv,i = agent.train(data,10)
