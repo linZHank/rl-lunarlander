@@ -18,8 +18,8 @@ dim_obs = env.observation_space.shape[0]
 num_act = env.action_space.n
 dim_act = 1
 # instantiate actor-critic and replay buffer
-agent = PPOAgent(target_kld=1.)
-replay_buffer = PPOBuffer(dim_obs, dim_act, max_size=2000)
+agent = PPOAgent(target_kld=.2, beta=0.)
+replay_buffer = PPOBuffer(dim_obs, dim_act, max_size=6000)
 save_dir = './saved_models/'+env.spec.id+'/ppo/'+datetime.now().strftime("%Y-%m-%d-%H-%M")+'/'
 if not os.path.exists(save_dir):
     try:
@@ -37,9 +37,9 @@ env.action_space.seed(RANDOM_SEED)
 # paramas
 min_steps = replay_buffer.max_size - env.spec.max_episode_steps
 assert min_steps>0
-num_trains = 1000
-train_epochs = 50
-save_freq = 100
+num_trains = 200
+train_epochs = 80
+save_freq = 20
 # prepare for interaction with environment
 obs, ep_ret, ep_len = env.reset(), 0, 0
 ep_cntr, st_cntr = 0, 0

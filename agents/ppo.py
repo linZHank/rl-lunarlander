@@ -169,7 +169,7 @@ class Critic(tf.keras.Model):
         return self.value_net(obs)
 
 class PPOAgent:
-    def __init__(self, name='ppo_agent', continuous=False, dim_obs=8, num_act=4, dim_act=1, clip_ratio=0.2, lr_actor=1e-4, lr_critic=1e-3, target_kld=0.2, beta=0.001):
+    def __init__(self, name='ppo_agent', continuous=False, dim_obs=8, num_act=4, dim_act=1, clip_ratio=0.2, lr_actor=1e-4, lr_critic=3e-4, target_kld=0.2, beta=0.001):
         # params
         self.continuous=continuous
         self.clip_ratio = clip_ratio
@@ -182,6 +182,7 @@ class PPOAgent:
         self.critic = Critic(dim_obs)
         self.actor_optimizer = tf.keras.optimizers.Adam(learning_rate=lr_actor)
         self.critic_optimizer = tf.keras.optimizers.Adam(learning_rate=lr_critic)
+        self.mse = tf.keras.losses.MeanSquaredError()
 
     @tf.function
     def make_decision(self, obs):
@@ -243,7 +244,7 @@ class PPOAgent:
             logging.debug("Starting critic training epoch: {}".format(ep+1))
             with tf.GradientTape() as tape:
                 tape.watch(self.critic.trainable_variables)
-                loss_val = tf.keras.losses.MSE(data['ret'], self.critic(data['obs']))
+                loss_val = self.mse(data['ret'], self.critic(data['obs']))
             # gradient descent critic weights
             grads_critic = tape.gradient(loss_val, self.critic.trainable_variables)
             self.critic_optimizer.apply_gradients(zip(grads_critic, self.critic.trainable_variables))
