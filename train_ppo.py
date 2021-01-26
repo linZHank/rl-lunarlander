@@ -37,13 +37,12 @@ env.action_space.seed(RANDOM_SEED)
 # paramas
 min_steps = replay_buffer.max_size - env.spec.max_episode_steps
 assert min_steps>0
-num_trains = 2
+num_trains = 1000
 train_epochs = 50
-save_freq = 10
+save_freq = 100
 # prepare for interaction with environment
 obs, ep_ret, ep_len = env.reset(), 0, 0
 ep_cntr, st_cntr = 0, 0
-episodes, total_steps = 0, 0
 stepwise_rewards, episodic_returns, sedimentary_returns = [], [], []
 episodic_steps = []
 start_time = time.time()
@@ -51,31 +50,31 @@ start_time = time.time()
 for t in range(num_trains):
     for s in range(replay_buffer.max_size):
         act, val, logp = agent.make_decision(np.expand_dims(obs,0))
-
-        next_obs, rew, done, _ = env.step(act)
+        next_obs, rew, done, _ = env.step(act[0,0].numpy())
         ep_ret += rew
         stepwise_rewards.append(rew)
         ep_len += 1
         st_cntr += 1
-        replay_buffer.store(obs, act, rew, val, logp)
+        replay_buffer.store(obs, act[0], np.expand_dims(rew,0), val[0], logp[0])
         obs = next_obs # SUPER CRITICAL!!!
         if done or ep_len>=env.spec.max_episode_steps:
-            val = 0.
+            val = [[0.]]
             if ep_len>=env.spec.max_episode_steps:
                 _, val, _ = agent.make_decision(np.expand_dims(obs,0))
-            replay_buffer.finish_path(val)
+            replay_buffer.finish_path(val[0])
             # summarize episode
             ep_cntr += 1
             episodic_returns.append(ep_ret)
-            sedimentary_returns.append(sum(episodic_returns)/episodes)
+            sedimentary_returns.append(sum(episodic_returns)/ep_cntr)
             episodic_steps.append(st_cntr)
             logging.info("\n----\nEpisode: {}, EpisodeLength: {}, TotalSteps: {}, StepInLoop: {}, \nEpReturn: {}\n----\n".format(ep_cntr, ep_len, st_cntr, s+1, ep_ret))
             obs, ep_ret, ep_len = env.reset(), 0, 0
             if s+1>=min_steps:
                 break
     # update actor-critic
-    loss_pi, loss_v, loss_info = agent.train(replay_buffer.get(), train_epochs)
-    print("\n====\nTraining: {} \nTotalSteps: {} \nAveReturn: {} \nLossPi: {} \nLossV: {} \nKLDivergence: {} \nEntropy: {} \nTimeElapsed: {}\n====\n".format(t+1, st_cntr, sedimentary_returns[-1], loss_pi, loss_v, loss_info['kl'], loss_info['entropy'], time.time()-start_time))
+    data = replay_buffer.get()
+    loss_pi, loss_v, loss_info = agent.train(data, train_epochs)
+    print("\n====\nTraining: {} \nTotalSteps: {} \nAveReturn: {} \nLossPi: {} \nLossV: {} \nKLDivergence: {} \nEntropy: {} \nTimeElapsed: {}\n====\n".format(t+1, st_cntr, sedimentary_returns[-1], loss_pi, loss_v, loss_info['kld'], loss_info['entropy'], time.time()-start_time))
 
         
     # Save model
@@ -83,38 +82,38 @@ for t in range(num_trains):
         agent.actor.policy_net.save(policy_net_path)
         agent.critic.value_net.save(value_net_path)
 
-# # Save returns 
-# np.save(os.path.join(model_dir, 'episodic_returns.npy'), episodic_returns)
-# np.save(os.path.join(model_dir, 'sedimentary_returns.npy'), sedimentary_returns)
-# np.save(os.path.join(model_dir, 'episodic_steps.npy'), episodic_steps)
-# with open(os.path.join(model_dir, 'training_time.txt'), 'w') as f:
-#     f.write("{}".format(time.time()-start_time))
-# # plot returns
-# fig, ax = plt.subplots(figsize=(8, 6))
-# fig.suptitle('Averaged Returns')
-# ax.plot(sedimentary_returns)
-# plt.show()
-# 
-# 
-# # Test trained model
-# input("Press ENTER to test lander...")
-# num_episodes = 10
-# num_steps = env.spec.max_episode_steps
-# ep_rets, ave_rets = [], []
-# for ep in range(num_episodes):
-#     obs, done, rewards = env.reset(), False, []
-#     for st in range(num_steps):
-#         env.render()
-#         act, _, _ = agent.pi_of_a_given_s(np.expand_dims(obs, 0))
-#         next_obs, rew, done, info = env.step(act)
-#         rewards.append(rew)
-#         # print("\n-\nepisode: {}, step: {} \naction: {} \nobs: {}, \nreward: {}".format(ep+1, st+1, act, obs, rew))
-#         obs = next_obs.copy()
-#         if done:
-#             ep_rets.append(sum(rewards))
-#             ave_rets.append(sum(ep_rets)/len(ep_rets))
-#             print("\n---\nepisode: {} \nepisode return: {}, averaged return: {} \n---\n".format(ep+1, ep_rets[-1], ave_rets[-1]))
-#             break
-# 
-# 
-# 
+# Save returns 
+np.save(os.path.join(save_dir, 'episodic_returns.npy'), episodic_returns)
+np.save(os.path.join(save_dir, 'sedimentary_returns.npy'), sedimentary_returns)
+np.save(os.path.join(save_dir, 'episodic_steps.npy'), episodic_steps)
+with open(os.path.join(save_dir, 'training_time.txt'), 'w') as f:
+    f.write("{}".format(time.time()-start_time))
+# plot returns
+fig, ax = plt.subplots(figsize=(8, 6))
+fig.suptitle('Averaged Returns')
+ax.plot(sedimentary_returns)
+plt.show()
+
+
+# Test trained model
+input("Press ENTER to test lander...")
+num_episodes = 10
+num_steps = env.spec.max_episode_steps
+ep_rets, ave_rets = [], []
+for ep in range(num_episodes):
+    obs, done, rewards = env.reset(), False, []
+    for st in range(num_steps):
+        env.render()
+        act, _, _ = agent.make_decision(np.expand_dims(obs, 0))
+        next_obs, rew, done, info = env.step(act[0,0].numpy())
+        rewards.append(rew)
+        # print("\n-\nepisode: {}, step: {} \naction: {} \nobs: {}, \nreward: {}".format(ep+1, st+1, act, obs, rew))
+        obs = next_obs
+        if done:
+            ep_rets.append(sum(rewards))
+            ave_rets.append(sum(ep_rets)/len(ep_rets))
+            print("\n---\nepisode: {} \nepisode return: {}, averaged return: {} \n---\n".format(ep+1, ep_rets[-1], ave_rets[-1]))
+            break
+
+
+

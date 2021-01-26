@@ -90,8 +90,8 @@ class PPOBuffer:
         The "last_val" argument should be 0 if the trajectory ended, and otherwise should be V(s_T).
         """
         path_slice = slice(self.path_start_idx, self.ptr)
-        rews = np.append(self.rew_buf[path_slice], last_val)
-        vals = np.append(self.val_buf[path_slice], last_val)
+        rews = np.expand_dims(np.append(self.rew_buf[path_slice], last_val), axis=-1)
+        vals = np.expand_dims(np.append(self.val_buf[path_slice], last_val), axis=-1)
         # the next two lines implement GAE-Lambda advantage calculation
         deltas = rews[:-1] + self.gamma * vals[1:] - vals[:-1]
         self.adv_buf[path_slice] = discount_cumsum(deltas, self.gamma * self.lam)
@@ -139,9 +139,9 @@ class CategoricalActor(tf.keras.Model):
 
     @tf.function
     def _logprob(self, pmf, act):
-        act_oh = tf.one_hot(tf.cast(act,tf.int32), self.num_act)
+        act_oh = tf.squeeze(tf.one_hot(tf.cast(act,tf.int32), self.num_act))
         p_a = tf.math.reduce_sum(pmf*act_oh, axis=-1)
-        logp_a = tf.math.log(p_a)
+        logp_a = tf.expand_dims(tf.math.log(p_a), axis=-1)
         return logp_a
         
     @tf.function
@@ -183,30 +183,31 @@ class PPOAgent:
         self.actor_optimizer = tf.keras.optimizers.Adam(learning_rate=lr_actor)
         self.critic_optimizer = tf.keras.optimizers.Adam(learning_rate=lr_critic)
 
+    @tf.function
     def make_decision(self, obs):
         pmf = self.actor._distribution(obs)
-        act = tf.squeeze(tf.random.categorical(logits=pmf, num_samples=1))
+        act = tf.random.categorical(logits=pmf, num_samples=1)
         logp_a = self.actor._logprob(pmf,act)
         val = self.critic(obs)
 
-        return act.numpy(), val.numpy(), logp_a.numpy()
+        return act, val, logp_a
 
     def train(self, data, epochs):
     
         @tf.function
         def categorical_entropy(pmf):
-            return tf.math.reduce_sum(-pmf*tf.math.log(pmf), axis=-1)
+            return tf.expand_dims(tf.math.reduce_sum(-pmf*tf.math.log(pmf), axis=-1), axis=-1)
 
         @tf.function
         def normal_entropy(stddev):
             return .5*tf.math.log(2.*np.pi*np.e*stddev**2)
 
         # update actor
+        ep_loss_pi = []
+        ep_kld = []
+        ep_ent = []
         for ep in range(epochs):
             logging.debug("Staring actor training epoch: {}".format(ep+1))
-            ep_loss_pi = []
-            ep_kld = tf.convert_to_tensor([]) # kl-divergence storage
-            ep_ent = tf.convert_to_tensor([]) # entropy storage
             with tf.GradientTape() as tape:
                 tape.watch(self.actor.trainable_variables)
                 pi, logp = self.actor(data['obs'], data['act'])
@@ -220,26 +221,26 @@ class PPOAgent:
             grads_actor = tape.gradient(loss_pi, self.actor.trainable_variables)
             self.actor_optimizer.apply_gradients(zip(grads_actor, self.actor.trainable_variables))
             ep_loss_pi.append(loss_pi)
-            ep_kld = tf.concat([ep_kld, approx_kld], axis=0)
-            ep_ent = tf.concat([ep_ent, ent], axis=0)
+            ep_kld.append(tf.math.reduce_mean(approx_kld))
+            ep_ent.append(tf.math.reduce_mean(ent))
             # log epoch
-            mean_loss_pi = tf.math.reduce_mean(ep_loss_pi)
-            mean_ent = tf.math.reduce_mean(ep_ent)
-            mean_kld = tf.math.reduce_mean(ep_kld)
-            logging.info("\n----Actor Training----\nEpoch :{} \nLoss: {} \nEntropy: {} \nKLDivergence: {}".format(
+            logging.info("\n----Actor Training----\nEpoch :{} \nLoss: {} \nKLDivergence: {} \nEntropy: {}".format(
                 ep+1,
-                mean_loss_pi,
-                mean_ent,
-                mean_kld
+                loss_pi,
+                ep_kld[-1],
+                ep_ent[-1],
             ))
             # early cutoff due to large kl-divergence
-            if mean_kld > self.target_kld:
+            if ep_kld[-1] > self.target_kld:
                 logging.warning("\nEarly stopping at epoch {} due to reaching max kl-divergence.\n".format(ep+1))
                 break
+        mean_loss_pi = tf.math.reduce_mean(ep_loss_pi)
+        mean_ent = tf.math.reduce_mean(ep_ent)
+        mean_kld = tf.math.reduce_mean(ep_kld)
         # update critic
+        ep_loss_val = []
         for ep in range(epochs):
             logging.debug("Starting critic training epoch: {}".format(ep+1))
-            ep_loss_val = []
             with tf.GradientTape() as tape:
                 tape.watch(self.critic.trainable_variables)
                 loss_val = tf.keras.losses.MSE(data['ret'], self.critic(data['obs']))
@@ -248,11 +249,11 @@ class PPOAgent:
             self.critic_optimizer.apply_gradients(zip(grads_critic, self.critic.trainable_variables))
             ep_loss_val.append(loss_val)
             # log loss_v
-            mean_loss_val = tf.math.reduce_mean(ep_loss_val)
             logging.info("\n----Critic Training----\nEpoch :{} \nLoss: {}".format(
                 ep+1,
-                mean_loss_val
+                loss_val
             ))
+        mean_loss_val = tf.math.reduce_mean(ep_loss_val)
 
         return mean_loss_pi, mean_loss_val, dict(kld=mean_kld, entropy=mean_ent)
 #############################Agent##############################
