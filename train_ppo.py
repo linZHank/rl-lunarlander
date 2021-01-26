@@ -7,9 +7,9 @@ import matplotlib.pyplot as plt
 from datetime import datetime
 import tensorflow as tf
 import logging
-logging.basicConfig(format='%(asctime)s %(message)s',level=logging.DEBUG)
+logging.basicConfig(format='%(asctime)s %(message)s',level=logging.INFO)
 
-from agents.ppo import PPOAgent, PPOBuffer
+from agents.tfp_ppo import PPOAgent, PPOBuffer
 
 RANDOM_SEED = 0
 # instantiate env
@@ -18,7 +18,7 @@ dim_obs = env.observation_space.shape[0]
 num_act = env.action_space.n
 dim_act = 1
 # instantiate actor-critic and replay buffer
-agent = PPOAgent(target_kld=.2, beta=0.)
+agent = PPOAgent(target_kld=.02, beta=0.)
 replay_buffer = PPOBuffer(dim_obs, dim_act, max_size=6000)
 save_dir = './saved_models/'+env.spec.id+'/ppo/'+datetime.now().strftime("%Y-%m-%d-%H-%M")+'/'
 if not os.path.exists(save_dir):
@@ -37,7 +37,7 @@ env.action_space.seed(RANDOM_SEED)
 # paramas
 min_steps = replay_buffer.max_size - env.spec.max_episode_steps
 assert min_steps>0
-num_trains = 200
+num_trains = 50
 train_epochs = 80
 save_freq = 20
 # prepare for interaction with environment
@@ -49,33 +49,32 @@ start_time = time.time()
 # main loop
 for t in range(num_trains):
     for s in range(replay_buffer.max_size):
-        act, val, logp = agent.make_decision(np.expand_dims(obs,0))
-        next_obs, rew, done, _ = env.step(act[0,0].numpy())
+        act, val, logp = agent.make_decision(np.expand_dims(obs,0)) # a,v,l: shape=(1, 1)
+        next_obs, rew, done, _ = env.step(act)
         ep_ret += rew
         stepwise_rewards.append(rew)
         ep_len += 1
         st_cntr += 1
-        replay_buffer.store(obs, act[0], np.expand_dims(rew,0), val[0], logp[0])
-        obs = next_obs # SUPER CRITICAL!!!
+        replay_buffer.store(obs, act, rew, val, logp)
+        obs = next_obs.copy() # SUPER CRITICAL!!!
         if done or ep_len>=env.spec.max_episode_steps:
-            val = [[0.]]
+            val = 0.
             if ep_len>=env.spec.max_episode_steps:
                 _, val, _ = agent.make_decision(np.expand_dims(obs,0))
-            replay_buffer.finish_path(val[0])
+            replay_buffer.finish_path(val)
             # summarize episode
             ep_cntr += 1
             episodic_returns.append(ep_ret)
             sedimentary_returns.append(sum(episodic_returns)/ep_cntr)
             episodic_steps.append(st_cntr)
-            logging.info("\n----\nEpisode: {}, EpisodeLength: {}, TotalSteps: {}, StepInLoop: {}, \nEpReturn: {}\n----\n".format(ep_cntr, ep_len, st_cntr, s+1, ep_ret))
+            logging.debug("\n----\nEpisode: {}, EpisodeLength: {}, TotalSteps: {}, StepInLoop: {}, \nEpReturn: {}\n----\n".format(ep_cntr, ep_len, st_cntr, s+1, ep_ret))
             obs, ep_ret, ep_len = env.reset(), 0, 0
             if s+1>=min_steps:
                 break
     # update actor-critic
     data = replay_buffer.get()
     loss_pi, loss_v, loss_info = agent.train(data, train_epochs)
-    print("\n====\nTraining: {} \nTotalSteps: {} \nAveReturn: {} \nLossPi: {} \nLossV: {} \nKLDivergence: {} \nEntropy: {} \nTimeElapsed: {}\n====\n".format(t+1, st_cntr, sedimentary_returns[-1], loss_pi, loss_v, loss_info['kld'], loss_info['entropy'], time.time()-start_time))
-
+    logging.info("\n====\nTraining: {} \nTotalSteps: {} \nDataSize: {} \nAveReturn: {} \nLossPi: {} \nLossV: {} \nKLDivergence: {} \nEntropy: {} \nTimeElapsed: {}\n====\n".format(t+1, st_cntr, data['ret'].shape[0], sedimentary_returns[-1], loss_pi, loss_v, loss_info['kld'], loss_info['entropy'], time.time()-start_time))
         
     # Save model
     if not t%save_freq or (t>=num_trains-1):
@@ -105,7 +104,7 @@ for ep in range(num_episodes):
     for st in range(num_steps):
         env.render()
         act, _, _ = agent.make_decision(np.expand_dims(obs, 0))
-        next_obs, rew, done, info = env.step(act[0,0].numpy())
+        next_obs, rew, done, info = env.step(act)
         rewards.append(rew)
         # print("\n-\nepisode: {}, step: {} \naction: {} \nobs: {}, \nreward: {}".format(ep+1, st+1, act, obs, rew))
         obs = next_obs
