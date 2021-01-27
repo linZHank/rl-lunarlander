@@ -242,7 +242,8 @@ class PPOAgent:
             logging.debug("Starting critic training epoch: {}".format(ep+1))
             with tf.GradientTape() as tape:
                 tape.watch(self.critic.trainable_variables)
-                loss_val = self.mse(data['ret'], self.critic(data['obs']))
+                # loss_val = self.mse(data['ret'], self.critic(data['obs']))
+                loss_val = tf.keras.losses.MSE(data['ret'], self.critic(data['obs']))
             # gradient descent critic weights
             grads_critic = tape.gradient(loss_val, self.critic.trainable_variables)
             self.critic_optimizer.apply_gradients(zip(grads_critic, self.critic.trainable_variables))
