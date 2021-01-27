@@ -39,7 +39,7 @@ class PPOBuffer:
     """
     def __init__(self, obs_dim, act_dim, size, gamma=0.99, lam=0.97):
         self.obs_buf = np.zeros((size, obs_dim), dtype=np.float32)
-        self.act_buf = np.zeros((size, act_dim), dtype=np.float32)
+        self.act_buf = np.zeros(size, dtype=np.float32)
         self.adv_buf = np.zeros(size, dtype=np.float32)
         self.rew_buf = np.zeros(size, dtype=np.float32)
         self.ret_buf = np.zeros(size, dtype=np.float32)
@@ -139,6 +139,7 @@ for t in range(num_trains):
         n_obs, rew, done, _ = env.step(act)
         ep_ret += rew
         ep_len += 1
+        st_cntr += 1
         replay_buffer.store(obs, act, rew, val, logp)
         obs = n_obs
         # handle episode termination

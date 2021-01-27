@@ -59,7 +59,7 @@ class PPOBuffer:
 
     def __init__(self, dim_obs, dim_act, max_size, gamma=.99, lam=0.97):
         self.obs_buf = np.zeros((max_size, dim_obs), dtype=np.float32)
-        self.act_buf = np.zeros((max_size, dim_act), dtype=np.float32)
+        self.act_buf = np.zeros(max_size, dtype=np.float32)
         self.adv_buf = np.zeros(max_size, dtype=np.float32)
         self.rew_buf = np.zeros(max_size, dtype=np.float32)
         self.ret_buf = np.zeros(max_size, dtype=np.float32)
@@ -133,14 +133,19 @@ class CategoricalActor(tf.keras.Model):
         super(CategoricalActor, self).__init__(name='categorical_actor', **kwargs)
         self.dim_obs=dim_obs
         self.num_act=num_act
-        self.policy_net = tf.keras.Sequential(
-            [
-                tf.keras.layers.InputLayer(input_shape=dim_obs, name='actor_inputs'),
-                tf.keras.layers.Dense(256, activation='tanh'),
-                tf.keras.layers.Dense(256, activation='tanh'),
-                tf.keras.layers.Dense(num_act, activation=None, name='actor_outputs')
-            ]
-        )
+        # self.policy_net = tf.keras.Sequential(
+        #     [
+        #         tf.keras.layers.InputLayer(input_shape=dim_obs, name='actor_inputs'),
+        #         tf.keras.layers.Dense(256, activation='tanh'),
+        #         tf.keras.layers.Dense(256, activation='tanh'),
+        #         tf.keras.layers.Dense(num_act, activation=None, name='actor_outputs')
+        #     ]
+        # )
+        inputs = tf.keras.Input(shape=(dim_obs,), name='actor_inputs')
+        x = tf.keras.layers.Dense(256, activation='tanh')(inputs)
+        x = tf.keras.layers.Dense(256, activation='tanh')(x)
+        outputs = tf.keras.layers.Dense(num_act, activation=None, name='actor_outputs')(x)
+        self.policy_net = tf.keras.Model(inputs, outputs)
 
     def _distribution(self, obs):
         logits = tf.squeeze(self.policy_net(obs)) # squeeze to deal with size 1
@@ -161,14 +166,19 @@ class CategoricalActor(tf.keras.Model):
 class Critic(tf.keras.Model):
     def __init__(self, dim_obs, **kwargs):
         super(Critic, self).__init__(name='critic', **kwargs)
-        self.value_net = tf.keras.Sequential(
-            [
-                tf.keras.layers.InputLayer(input_shape=dim_obs, name='critic_inputs'),
-                tf.keras.layers.Dense(256, activation='relu'),
-                tf.keras.layers.Dense(256, activation='relu'),
-                tf.keras.layers.Dense(1, activation=None, name='critic_outputs')
-            ]
-        )
+        # self.value_net = tf.keras.Sequential(
+        #     [
+        #         tf.keras.layers.InputLayer(input_shape=dim_obs, name='critic_inputs'),
+        #         tf.keras.layers.Dense(256, activation='relu'),
+        #         tf.keras.layers.Dense(256, activation='relu'),
+        #         tf.keras.layers.Dense(1, activation=None, name='critic_outputs')
+        #     ]
+        # )
+        inputs = tf.keras.Input(shape=(dim_obs,), name='critic_inputs')
+        x = tf.keras.layers.Dense(256, activation='relu')(inputs)
+        x = tf.keras.layers.Dense(256, activation='relu')(x)
+        outputs = tf.keras.layers.Dense(1, activation=None, name='critic_outputs')(x)
+        self.value_net = tf.keras.Model(inputs, outputs)
 
     @tf.function
     def call(self, obs):
