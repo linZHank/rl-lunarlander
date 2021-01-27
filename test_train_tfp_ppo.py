@@ -39,7 +39,7 @@ class PPOBuffer:
     """
     def __init__(self, obs_dim, act_dim, size, gamma=0.99, lam=0.97):
         self.obs_buf = np.zeros((size, obs_dim), dtype=np.float32)
-        self.act_buf = np.zeros(size, dtype=np.float32)
+        self.act_buf = np.squeeze(np.zeros((size, dim_act), dtype=np.float32)) # in case of act_dim=1
         self.adv_buf = np.zeros(size, dtype=np.float32)
         self.rew_buf = np.zeros(size, dtype=np.float32)
         self.ret_buf = np.zeros(size, dtype=np.float32)
@@ -102,12 +102,12 @@ class PPOBuffer:
 RANDOM_SEED = 0
 # instantiate env
 env = gym.make('LunarLander-v2')
-dim_obs = env.observation_space.shape[0]
+dim_obs = env.observation_space.shape
 num_act = env.action_space.n
 dim_act = 1
 # instantiate actor-critic and replay buffer
 agent = PPOAgent(target_kld=.02, beta=0.)
-replay_buffer = PPOBuffer(dim_obs, dim_act, size=5000)
+replay_buffer = PPOBuffer(dim_obs[0], dim_act, size=5000)
 save_dir = './saved_models/'+env.spec.id+'/ppo/'+datetime.now().strftime("%Y-%m-%d-%H-%M")+'/'
 if not os.path.exists(save_dir):
     try:
@@ -123,7 +123,7 @@ env.seed(RANDOM_SEED)
 np.random.seed(RANDOM_SEED)
 env.action_space.seed(RANDOM_SEED)
 # paramas
-num_trains = 50
+num_trains = 30
 train_epochs = 80
 save_freq = 20
 # prepare for interaction with environment

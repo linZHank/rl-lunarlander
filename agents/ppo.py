@@ -29,8 +29,6 @@ if gpus:
     except RuntimeError as e:
         # Visible devices must be set before GPUs have been initialized
         print(e)
-# set log level
-logging.basicConfig(format='%(asctime)s %(message)s',level=logging.DEBUG)
 #############################Setup##############################
 
 
@@ -55,24 +53,25 @@ class PPOBuffer:
     for calculating the advantages of state-action pairs.
     """
 
-    def __init__(self, dim_obs, dim_act, max_size, gamma=0.99, lam=0.95):
-        self.obs_buf = np.zeros((max_size, dim_obs), dtype=np.float32)
-        self.act_buf = np.zeros((max_size, dim_act), dtype=np.float32)
-        self.adv_buf = np.zeros((max_size,1), dtype=np.float32)
-        self.rew_buf = np.zeros((max_size,1), dtype=np.float32)
-        self.ret_buf = np.zeros((max_size,1), dtype=np.float32)
-        self.val_buf = np.zeros((max_size,1), dtype=np.float32)
-        self.logp_buf = np.zeros((max_size,1), dtype=np.float32)
+    def __init__(self, dim_obs=8, dim_act=1, max_size=1000, gamma=0.99, lam=0.97):
         # params
         self.dim_obs=dim_obs
         self.dim_act=dim_act
         self.gamma=gamma
         self.lam=lam
         self.max_size=max_size 
+        # buffers
+        self.obs_buf = np.zeros((max_size, dim_obs), dtype=np.float32)
+        self.act_buf = np.squeeze(np.zeros((max_size, dim_act), dtype=np.float32)) # squeeze in case dim_act=1
+        self.adv_buf = np.zeros(max_size, dtype=np.float32)
+        self.rew_buf = np.zeros(max_size, dtype=np.float32)
+        self.ret_buf = np.zeros(max_size, dtype=np.float32)
+        self.val_buf = np.zeros(max_size, dtype=np.float32)
+        self.lpa_buf = np.zeros(max_size, dtype=np.float32)
         # vars
         self.ptr, self.path_start_idx, = 0, 0
 
-    def store(self, obs, act, rew, val, logp):
+    def store(self, obs, act, rew, val, lpa):
         """
         Append one timestep of agent-environment interaction to the buffer.
         """
@@ -81,7 +80,7 @@ class PPOBuffer:
         self.act_buf[self.ptr] = act
         self.rew_buf[self.ptr] = rew
         self.val_buf[self.ptr] = val
-        self.logp_buf[self.ptr] = logp
+        self.lpa_buf[self.ptr] = lpa
         self.ptr += 1
 
     def finish_path(self, last_val=0):
@@ -90,13 +89,14 @@ class PPOBuffer:
         The "last_val" argument should be 0 if the trajectory ended, and otherwise should be V(s_T).
         """
         path_slice = slice(self.path_start_idx, self.ptr)
-        rews = np.expand_dims(np.append(self.rew_buf[path_slice], last_val), axis=-1)
-        vals = np.expand_dims(np.append(self.val_buf[path_slice], last_val), axis=-1)
+        rews = np.append(self.rew_buf[path_slice], last_val)
+        vals = np.append(self.val_buf[path_slice], last_val)
         # the next two lines implement GAE-Lambda advantage calculation
         deltas = rews[:-1] + self.gamma * vals[1:] - vals[:-1]
-        self.adv_buf[path_slice] = discount_cumsum(deltas, self.gamma * self.lam)
-        # the next line computes rewards-to-go, to be targets for the value function
+        self.adv_buf[path_slice] = discount_cumsum(deltas, self.gamma*self.lam)
+        # rewards-to-go
         self.ret_buf[path_slice] = discount_cumsum(rews, self.gamma)[:-1]
+        # set new path start idx 
         self.path_start_idx = self.ptr
 
     def get(self):
@@ -110,13 +110,13 @@ class PPOBuffer:
         self.val_buf = self.val_buf[:self.ptr] 
         self.ret_buf = self.ret_buf[:self.ptr] 
         self.adv_buf = self.adv_buf[:self.ptr] 
-        self.logp_buf = self.logp_buf[:self.ptr]
+        self.lpa_buf = self.lpa_buf[:self.ptr]
         # the next three lines implement the advantage normalization trick
         adv_mean = np.mean(self.adv_buf)
-        adv_std = np.std(self.adv_buf)
+        adv_std = np.clip(np.std(self.adv_buf), 1e-10, None)
         self.adv_buf = (self.adv_buf - adv_mean) / adv_std
         data = dict(obs=self.obs_buf, act=self.act_buf, ret=self.ret_buf,
-                    adv=self.adv_buf, logp=self.logp_buf)
+                    adv=self.adv_buf, lpa=self.lpa_buf)
         # reset buffer
         self.__init__(self.dim_obs, self.dim_act, self.max_size)
         return {k: tf.convert_to_tensor(v, dtype=tf.float32) for k,v in data.items()}
@@ -133,31 +133,32 @@ class CategoricalActor(tf.keras.Model):
         self.policy_net = tf.keras.Sequential(
             [
                 tf.keras.layers.InputLayer(input_shape=dim_obs, name='actor_inputs'),
-                tf.keras.layers.Dense(256, activation='relu'),
-                tf.keras.layers.Dense(256, activation='relu'),
-                tf.keras.layers.Dense(num_act, activation='softmax', name='actor_outputs')
+                tf.keras.layers.Dense(256, activation='tanh'),
+                tf.keras.layers.Dense(256, activation='tanh'),
+                tf.keras.layers.Dense(num_act, activation=None, name='actor_outputs')
             ]
         )
 
     @tf.function
     def _distribution(self, obs):
-        pmf = tf.clip_by_value(self.policy_net(obs), 1e-10, 1.)
-        return pmf
+        logits = self.policy_net(obs) # squeeze to deal with size 1
+        pmf = tf.nn.softmax(logits=logits)
+        return tf.clip_by_value(pmf, 1e-10, 1.) # Probability Mass Function
 
     @tf.function
     def _logprob(self, pmf, act):
-        act_oh = tf.squeeze(tf.one_hot(tf.cast(act,tf.int32), self.num_act))
+        act_oh = tf.one_hot(tf.cast(act,tf.int32), self.num_act)
         p_a = tf.math.reduce_sum(pmf*act_oh, axis=-1)
-        logp_a = tf.expand_dims(tf.math.log(p_a), axis=-1)
+        logp_a = tf.math.log(tf.clip_by_value(p_a, 1e-10, 1.))
         return logp_a
         
     @tf.function
     def call(self, obs, act=None):
-        pmf = self._distribution(obs)
-        logp_a = None
+        pi = self._distribution(obs)
+        lpa = None
         if act is not None:
-            logp_a = self._logprob(pmf, act)
-        return pmf, logp_a
+            lpa = self._logprob(pi, act)
+        return pi, lpa
 
 class Critic(tf.keras.Model):
     def __init__(self, dim_obs, **kwargs):
@@ -173,10 +174,10 @@ class Critic(tf.keras.Model):
 
     @tf.function
     def call(self, obs):
-        return self.value_net(obs)
+        return tf.squeeze(self.value_net(obs))
 
 class PPOAgent:
-    def __init__(self, name='ppo_agent', continuous=False, dim_obs=8, num_act=4, dim_act=1, clip_ratio=0.2, lr_actor=3e-4, lr_critic=1e-3, target_kld=0.2, beta=0.001):
+    def __init__(self, name='ppo_agent', continuous=False, dim_obs=(8,), num_act=4, dim_act=1, clip_ratio=0.2, lr_actor=3e-4, lr_critic=1e-3, target_kld=0.05, beta=0.001):
         # params
         self.continuous=continuous
         self.clip_ratio = clip_ratio
@@ -193,18 +194,19 @@ class PPOAgent:
 
     @tf.function
     def make_decision(self, obs):
-        pmf = self.actor._distribution(obs)
-        act = tf.random.categorical(logits=pmf, num_samples=1)
-        logp_a = self.actor._logprob(pmf,act)
+        pi = self.actor._distribution(obs)
+        act = tf.random.categorical(logits=pi, num_samples=1)
+        lpa = self.actor._logprob(pi, act)
         val = self.critic(obs)
 
-        return act, val, logp_a
+        return tf.squeeze(act), val, tf.squeeze(lpa)
 
     def train(self, data, epochs):
     
         @tf.function
         def categorical_entropy(pmf):
-            return tf.expand_dims(tf.math.reduce_sum(-pmf*tf.math.log(pmf), axis=-1), axis=-1)
+            # return tf.math.reduce_sum(-pmf*tf.math.log(tf.clip_by_value(pmf, 1e-10, 1.)), axis=-1)
+            return tf.math.reduce_sum(-pmf*tf.math.log(pmf), axis=-1)
 
         @tf.function
         def normal_entropy(stddev):
@@ -218,10 +220,10 @@ class PPOAgent:
             logging.debug("Staring actor training epoch: {}".format(ep+1))
             with tf.GradientTape() as tape:
                 tape.watch(self.actor.trainable_variables)
-                pi, logp = self.actor(data['obs'], data['act'])
-                ratio = tf.math.exp(logp - data['logp']) # pi/old_pi
+                pi, lpa = self.actor(data['obs'], data['act'])
+                ratio = tf.math.exp(lpa - data['lpa']) # pi/old_pi
                 clip_adv = tf.math.multiply(tf.clip_by_value(ratio, 1-self.clip_ratio, 1+self.clip_ratio), data['adv'])
-                approx_kld = data['logp'] - logp
+                approx_kld = data['lpa'] - lpa
                 ent = categorical_entropy(pi)
                 obj = tf.math.minimum(ratio*data['adv'], clip_adv) + self.beta*ent
                 loss_pi = -tf.math.reduce_mean(obj)
@@ -251,7 +253,7 @@ class PPOAgent:
             logging.debug("Starting critic training epoch: {}".format(ep+1))
             with tf.GradientTape() as tape:
                 tape.watch(self.critic.trainable_variables)
-                loss_val = self.mse(data['ret'], self.critic(data['obs']))
+                loss_val = tf.keras.losses.MSE(data['ret'], self.critic(data['obs']))
             # gradient descent critic weights
             grads_critic = tape.gradient(loss_val, self.critic.trainable_variables)
             self.critic_optimizer.apply_gradients(zip(grads_critic, self.critic.trainable_variables))
@@ -267,20 +269,21 @@ class PPOAgent:
 #############################Agent##############################
         
 
-# Uncomment following for testing the PPO agent
-# agent = PPOAgent(8,4)
-# o = np.random.uniform(-5,5,(10,8))
-# a = np.random.randint(0,4,(10,))
-# r = np.random.uniform(-1,4,(10,))
-# l = np.random.uniform(-2,0,(10,))
-# ad = np.random.normal(4,1,(10,))
-# d = dict(
-#     obs=o,
-#     act=a,
-#     ret=r,
-#     adv=ad,
-#     logp=l
-# )
-# data = {k: tf.convert_to_tensor(v, dtype=tf.float32) for k,v in d.items()}
-# 
-# lp,lv,i = agent.train(data,10)
+# # Uncomment following for testing the PPO agent
+# import gym
+# env = gym.make('LunarLander-v2')
+# dim_obs = env.observation_space.shape
+# dim_act = 1
+# num_act = env.action_space.n
+# agent = PPOAgent()
+# rb = PPOBuffer()
+# o = env.reset()
+# for _ in range(100):
+#     a, v, l = agent.make_decision(np.expand_dims(o, 0))
+#     o2, r, d, i = env.step(a.numpy())
+#     rb.store(o,a,r,v,l)
+#     o = o2
+#     if d:
+#         break
+# rb.finish_path()
+# agent.train(rb.get(), 10)
