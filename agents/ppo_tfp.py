@@ -7,6 +7,7 @@ import tensorflow as tf
 import tensorflow_probability as tfp
 tfd = tfp.distributions
 import logging
+logging.basicConfig(format='%(asctime)s %(message)s',level=logging.DEBUG)
 
 
 #############################Setup##############################
@@ -157,6 +158,37 @@ class CategoricalActor(tf.keras.Model):
             logp_a = self._logprob(pi, act)
         return pi, logp_a
 
+class GaussianActor(tf.keras.Model):
+
+    def __init__(self, dim_obs, dim_act, **kwargs):
+        super(GaussianActor, self).__init__(name='gaussian_actor', **kwargs)
+        self.dim_obs=dim_obs
+        self.dim_act=dim_act
+        inputs = tf.keras.Input(shape=dim_obs, name='actor_inputs')
+        x = tf.keras.layers.Dense(256, activation=tf.keras.layers.LeakyReLU(alpha=0.2))(inputs)
+        x = tf.keras.layers.Dense(256, activation=tf.keras.layers.LeakyReLU(alpha=0.2))(x)
+        outputs_mu = tf.keras.layers.Dense(dim_act, activation=None, name='actor_outputs_mu')(x)
+        outputs_sigma = tf.keras.layers.Dense(dim_act, activation='relu', name='actor_outputs_sigma')(x)
+        self.policy_net = tf.keras.Model(inputs=inputs, outputs=[outputs_mu, outputs_sigma])
+
+    def _distribution(self, obs):
+        mean = tf.squeeze(self.policy_net(obs)[0])
+        stddev = tf.squeeze(self.policy_net(obs)[-1])
+        d = tfd.Normal(loc=mean, scale=stddev+1e-10)
+        return d
+
+    def _logprob(self, distribution, act):
+        logp_a = distribution.log_prob(act) # get log probability from a tfp distribution
+        return tf.math.reduce_sum(logp_a, axis=-1)
+
+    def call(self, obs, act=None):
+        pi = self._distribution(obs)
+        logp_a = None
+        if act is not None:
+            logp_a = self._logprob(pi, act)
+
+        return pi, logp_a
+
 class Critic(tf.keras.Model):
     def __init__(self, dim_obs, **kwargs):
         super(Critic, self).__init__(name='critic', **kwargs)
@@ -183,7 +215,10 @@ class PPOAgent:
         self.beta = beta
         self.target_kld = target_kld
         # modules
-        self.actor = CategoricalActor(dim_obs, num_act)
+        if continuous:
+            self.actor = GaussianActor(dim_obs, dim_act)
+        else:
+            self.actor = CategoricalActor(dim_obs, num_act)
         self.critic = Critic(dim_obs)
         self.actor_optimizer = tf.keras.optimizers.Adam(learning_rate=lr_actor)
         self.critic_optimizer = tf.keras.optimizers.Adam(learning_rate=lr_critic)
@@ -211,7 +246,7 @@ class PPOAgent:
                 ratio = tf.math.exp(lpa - data['lpa']) # pi/old_pi
                 clip_adv = tf.math.multiply(tf.clip_by_value(ratio, 1-self.clip_ratio, 1+self.clip_ratio), data['adv'])
                 approx_kld = data['lpa'] - lpa
-                ent = pi.entropy()
+                ent = tf.math.reduce_sum(pi.entropy(), axis=-1)
                 obj = tf.math.minimum(ratio*data['adv'], clip_adv) + self.beta*ent
                 loss_pi = -tf.math.reduce_mean(obj)
             # gradient descent actor weights
@@ -258,22 +293,23 @@ class PPOAgent:
         
 
 #############################Test##############################
-# # Uncomment following for testing the PPO agent
-# import gym
-# env = gym.make('LunarLander-v2')
-# dim_obs = env.observation_space.shape
-# dim_act = 1
+# Uncomment following for testing the PPO agent
+import gym
+env = gym.make('LunarLanderContinuous-v2')
+dim_obs = env.observation_space.shape
+dim_act = env.action_space.shape[0]
 # num_act = env.action_space.n
-# agent = PPOAgent()
-# rb = PPOBuffer()
-# o = env.reset()
-# for _ in range(100):
-#     a, v, l = agent.make_decision(np.expand_dims(o, 0))
-#     o2, r, d, i = env.step(a.numpy())
-#     rb.store(o,a,r,v,l)
-#     o = o2
-#     if d:
-#         break
-# rb.finish_path()
-# agent.train(rb.get(), 10)
+agent = PPOAgent(continuous=True, dim_act=dim_act, target_kld=0.2)
+rb = PPOBuffer(dim_act=dim_act)
+o = env.reset()
+for _ in range(100):
+    a, v, l = agent.make_decision(np.expand_dims(o, 0))
+    o2, r, d, i = env.step(a.numpy())
+    rb.store(o,a,r,v,l)
+    o = o2
+    if d:
+        break
+rb.finish_path()
+data = rb.get()
+agent.train(data, 10)
 #############################Test##############################
