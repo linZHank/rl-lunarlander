@@ -168,12 +168,12 @@ class GaussianActor(tf.keras.Model):
         x = tf.keras.layers.Dense(256, activation=tf.keras.layers.LeakyReLU(alpha=0.2))(inputs)
         x = tf.keras.layers.Dense(256, activation=tf.keras.layers.LeakyReLU(alpha=0.2))(x)
         outputs_mu = tf.keras.layers.Dense(dim_act, activation=None, name='actor_outputs_mu')(x)
-        outputs_sigma = tf.keras.layers.Dense(dim_act, activation='relu', name='actor_outputs_sigma')(x)
-        self.policy_net = tf.keras.Model(inputs=inputs, outputs=[outputs_mu, outputs_sigma])
+        outputs_logsigma = tf.keras.layers.Dense(dim_act, activation=None, name='actor_outputs_sigma')(x)
+        self.policy_net = tf.keras.Model(inputs=inputs, outputs=[outputs_mu, outputs_logsigma])
 
     def _distribution(self, obs):
         mean = tf.squeeze(self.policy_net(obs)[0])
-        stddev = tf.squeeze(self.policy_net(obs)[-1])
+        stddev = tf.squeeze(tf.math.exp(self.policy_net(obs)[-1]))
         d = tfd.Normal(loc=mean, scale=stddev+1e-10)
         return d
 
@@ -294,22 +294,22 @@ class PPOAgent:
 
 #############################Test##############################
 # Uncomment following for testing the PPO agent
-import gym
-env = gym.make('LunarLanderContinuous-v2')
-dim_obs = env.observation_space.shape
-dim_act = env.action_space.shape[0]
-# num_act = env.action_space.n
-agent = PPOAgent(continuous=True, dim_act=dim_act, target_kld=0.2)
-rb = PPOBuffer(dim_act=dim_act)
-o = env.reset()
-for _ in range(100):
-    a, v, l = agent.make_decision(np.expand_dims(o, 0))
-    o2, r, d, i = env.step(a.numpy())
-    rb.store(o,a,r,v,l)
-    o = o2
-    if d:
-        break
-rb.finish_path()
-data = rb.get()
-agent.train(data, 10)
+# import gym
+# env = gym.make('LunarLanderContinuous-v2')
+# dim_obs = env.observation_space.shape
+# dim_act = env.action_space.shape[0]
+# # num_act = env.action_space.n
+# agent = PPOAgent(continuous=True, dim_act=dim_act, target_kld=0.2)
+# rb = PPOBuffer(dim_act=dim_act)
+# o = env.reset()
+# for _ in range(100):
+#     a, v, l = agent.make_decision(np.expand_dims(o, 0))
+#     o2, r, d, i = env.step(a.numpy())
+#     rb.store(o,a,r,v,l)
+#     o = o2
+#     if d:
+#         break
+# rb.finish_path()
+# data = rb.get()
+# agent.train(data, 10)
 #############################Test##############################
