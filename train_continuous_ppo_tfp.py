@@ -15,7 +15,7 @@ env = gym.make('LunarLanderContinuous-v2')
 dim_obs = env.observation_space.shape
 dim_act = env.action_space.shape[0]
 # instantiate actor-critic and replay buffer
-agent = PPOAgent(continuous=True, dim_act=dim_act, target_kld=0.1)
+agent = PPOAgent(continuous=True, dim_act=dim_act, target_kld=1.1)
 replay_buffer = PPOBuffer(dim_act=dim_act, max_size=6000) # max_size is the upper-bound
 save_dir = './saved_models/'+env.spec.id+'/ppo/'+datetime.now().strftime("%Y-%m-%d-%H-%M")+'/'
 if not os.path.exists(save_dir):
@@ -72,17 +72,17 @@ for t in range(num_trains):
     data = replay_buffer.get()
     loss_pi, loss_v, loss_info = agent.train(data, train_epochs)
     logging.info("\n====\nTraining: {} \nTotalSteps: {} \nDataSize: {} \nAveReturn: {} \nLossPi: {} \nLossV: {} \nKLDivergence: {} \nEntropy: {} \nTimeElapsed: {}\n====\n".format(t+1, st_cntr, data['ret'].shape[0], sedimentary_returns[-1], loss_pi, loss_v, loss_info['kld'], loss_info['entropy'], time.time()-start_time))
-#     # Save model
-#     if not t%save_freq or (t>=num_trains-1):
-#         agent.actor.policy_net.save(policy_net_path)
-#         agent.critic.value_net.save(value_net_path)
-# 
-# # Save returns 
-# np.save(os.path.join(save_dir, 'episodic_returns.npy'), episodic_returns)
-# np.save(os.path.join(save_dir, 'sedimentary_returns.npy'), sedimentary_returns)
-# np.save(os.path.join(save_dir, 'episodic_steps.npy'), episodic_steps)
-# with open(os.path.join(save_dir, 'training_time.txt'), 'w') as f:
-#     f.write("{}".format(time.time()-start_time))
+    # Save model
+    if not t%save_freq or (t>=num_trains-1):
+        agent.actor.policy_net.save(policy_net_path)
+        agent.critic.value_net.save(value_net_path)
+
+# Save returns 
+np.save(os.path.join(save_dir, 'episodic_returns.npy'), episodic_returns)
+np.save(os.path.join(save_dir, 'sedimentary_returns.npy'), sedimentary_returns)
+np.save(os.path.join(save_dir, 'episodic_steps.npy'), episodic_steps)
+with open(os.path.join(save_dir, 'training_time.txt'), 'w') as f:
+    f.write("{}".format(time.time()-start_time))
 # plot returns
 fig, ax = plt.subplots(figsize=(8, 6))
 fig.suptitle('Averaged Returns')
