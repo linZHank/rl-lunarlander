@@ -28,67 +28,39 @@ if gpus:
         # Visible devices must be set before GPUs have been initialized
         print(e)
 ################################################################
-class ReplayBuffer:
+class DQNBuffer:
     """
     An off-policy replay buffer for DQN agent
     """
-    def __init__(self, buf_size, dim_img, dim_odom, dim_act):
-        self.img_buf = np.zeros(shape=(buf_size, dim_img[0], dim_img[1], dim_img[2]), dtype=np.float32)
-        self.odom_buf = np.zeros(shape=(buf_size, dim_odom), dtype=np.float32)
-        self.nxt_img_buf = np.zeros(shape=(buf_size, dim_img[0], dim_img[1], dim_img[2]), dtype=np.float32)
-        self.nxt_odom_buf = np.zeros(shape=(buf_size, dim_odom), dtype=np.float32)
-        self.act_buf = np.zeros(shape=buf_size, dtype=np.int)
-        self.rew_buf = np.zeros(shape=buf_size, dtype=np.float32)
-        self.done_buf = np.zeros(shape=buf_size, dtype=np.bool)
-        self.ptr, self.size, self.max_size = 0, 0, buf_size
+    def __init__(self, dim_obs, max_size):
+        # property
+        self.max_size = max_size
+        # buffers
+        self.obs_buf = np.zeros((size, obs_dim), dtype=np.float32)
+        self.nobs_buf = np.zeros((size, obs_dim), dtype=np.float32)
+        self.act_buf = np.zeros(size, dtype=np.float32)
+        self.rew_buf = np.zeros(size, dtype=np.float32)
+        self.done_buf = np.zeros(size, dtype=np.float32)
+        # variables
+        self.ptr, self.size = 0, 0 
 
-    def store(self, img, odom, act, rew, done, nxt_img, nxt_odom):
-        self.img_buf[self.ptr] = img
-        self.odom_buf[self.ptr] = odom
+    def store(self, obs, act, rew, done, nobs):
+        self.obs_buf[self.ptr] = obs
+        self.nobs_buf[self.ptr] = nobs
         self.act_buf[self.ptr] = act
         self.rew_buf[self.ptr] = rew
         self.done_buf[self.ptr] = done
-        self.nxt_img_buf[self.ptr] = nxt_img
-        self.nxt_odom_buf[self.ptr] = nxt_odom
-        self.ptr = (self.ptr + 1)%self.max_size
+        self.ptr = (self.ptr+1) % self.max_size
         self.size = min(self.size+1, self.max_size)
 
     def sample_batch(self, batch_size):
-        ids = np.random.randint(0, self.size, size=batch_size)
-        batch = dict(
-            img = tf.convert_to_tensor(self.img_buf[ids], dtype=tf.float32),
-            odom = tf.convert_to_tensor(self.odom_buf[ids], dtype=tf.float32),
-            act = tf.convert_to_tensor(self.act_buf[ids], dtype=tf.int32),
-            rew = tf.convert_to_tensor(self.rew_buf[ids], dtype=tf.float32),
-            done = tf.convert_to_tensor(self.done_buf[ids], dtype=tf.float32),
-            nxt_img = tf.convert_to_tensor(self.nxt_img_buf[ids], dtype=tf.float32),
-            nxt_odom = tf.convert_to_tensor(self.nxt_odom_buf[ids], dtype=tf.float32)
-        )
-
+        sample_ids = np.random.randint(0, self.size, size=batch_size)
+        batch = dict(obs=tf.convert_to_tensor(self.obs_buf[sample_ids]),
+                     nobs=tf.convert_to_tensor(self.nobs_buf[sample_ids]),
+                     act=tf.convert_to_tensor(self.act_buf[sample_ids]),
+                     rew=tf.convert_to_tensor(self.rew_buf[sample_ids]),
+                     done=tf.convert_to_tensor(self.done_buf[sample_ids]))
         return batch
-
-def dqn(dim_img, dim_odom, dim_act, activation='relu'):
-    """
-    Gives you a pe_env_discrete flavored DQN model
-    """
-    img_input = tf.keras.Input(shape=(dim_img[0],dim_img[1],3), name='img')
-    odom_input = tf.keras.Input(shape=(dim_odom,), name='odom')
-    # image features
-    img_feature = tf.keras.layers.Conv2D(32,3, padding='same', activation=activation)(img_input)
-    img_feature = tf.keras.layers.MaxPool2D()(img_feature)
-    img_feature = tf.keras.layers.Conv2D(32, 3, padding='same', activation=activation)(img_feature)
-    img_feature = tf.keras.layers.MaxPool2D()(img_feature)
-    img_feature = tf.keras.layers.Conv2D(32, 3, padding='same', activation=activation)(img_feature)
-    img_feature = tf.keras.layers.Flatten()(img_feature)
-    img_feature = tf.keras.layers.Dense(128, activation=activation)(img_feature)
-    # odom features
-    odom_feature = tf.keras.layers.Dense(64, activation=activation)(odom_input)
-    odom_feature = tf.keras.layers.Dense(64, activation=activation)(odom_feature)
-    # concatenate features
-    cat_feature = tf.keras.layers.concatenate([img_feature, odom_feature])
-    q_vals = tf.keras.layers.Dense(dim_act, activation=None, name='Q_values')(cat_feature)
-    
-    return tf.keras.Model(inputs=[img_input, odom_input], outputs=q_vals) 
 
 class DQNAgent:
     """
