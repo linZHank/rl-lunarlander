@@ -30,19 +30,16 @@ if gpus:
 ################################################################
 class DQNBuffer:
     """
-    An off-policy replay buffer for DQN agent
+    A simple FIFO experience replay buffer for SAC agents.
     """
-    def __init__(self, dim_obs, max_size):
-        # property
-        self.max_size = max_size
-        # buffers
-        self.obs_buf = np.zeros((size, obs_dim), dtype=np.float32)
-        self.nobs_buf = np.zeros((size, obs_dim), dtype=np.float32)
-        self.act_buf = np.zeros(size, dtype=np.float32)
+
+    def __init__(self, dim_obs, size):
+        self.obs_buf = np.zeros((size, dim_obs), dtype=np.float32)
+        self.nobs_buf = np.zeros((size, dim_obs), dtype=np.float32)
+        self.act_buf = np.zeros(size, dtype=np.int32)
         self.rew_buf = np.zeros(size, dtype=np.float32)
         self.done_buf = np.zeros(size, dtype=np.float32)
-        # variables
-        self.ptr, self.size = 0, 0 
+        self.ptr, self.size, self.max_size = 0, 0, size
 
     def store(self, obs, act, rew, done, nobs):
         self.obs_buf[self.ptr] = obs
@@ -53,13 +50,13 @@ class DQNBuffer:
         self.ptr = (self.ptr+1) % self.max_size
         self.size = min(self.size+1, self.max_size)
 
-    def sample_batch(self, batch_size):
-        sample_ids = np.random.randint(0, self.size, size=batch_size)
-        batch = dict(obs=tf.convert_to_tensor(self.obs_buf[sample_ids]),
-                     nobs=tf.convert_to_tensor(self.nobs_buf[sample_ids]),
-                     act=tf.convert_to_tensor(self.act_buf[sample_ids]),
-                     rew=tf.convert_to_tensor(self.rew_buf[sample_ids]),
-                     done=tf.convert_to_tensor(self.done_buf[sample_ids]))
+    def sample_batch(self, batch_size=32):
+        idxs = np.random.randint(0, self.size, size=batch_size)
+        batch = dict(obs=tf.convert_to_tensor(self.obs_buf[idxs]),
+                     nobs=tf.convert_to_tensor(self.nobs_buf[idxs]),
+                     act=tf.convert_to_tensor(self.act_buf[idxs]),
+                     rew=tf.convert_to_tensor(self.rew_buf[idxs]),
+                     done=tf.convert_to_tensor(self.done_buf[idxs]))
         return batch
 
 class Critic(tf.keras.Model):
@@ -78,7 +75,10 @@ class Critic(tf.keras.Model):
 
     @tf.function
     def maxq(self, obs):
-        return tf.math.reduce_max(self.value_net(obs), axis=-1)
+        qval = self.call(obs)
+        val= tf.math.reduce_max(qval, axis=-1)
+        idx = tf.math.argmax(qval, axis=-1)
+        return val, idx
 
     @tf.function
     def call(self, obs):
@@ -100,8 +100,8 @@ class DQNAgent(tf.keras.Model):
         # variables
         self.epsilon = init_eps
         # DQN module
-        self.qnet = Critic(obs_dim, act_dim) 
-        self.targ_qnet = Critic(obs_dim, act_dim)
+        self.qnet = Critic(dim_obs, num_act) 
+        self.targ_qnet = Critic(dim_obs, num_act)
         self.optimizer = tf.keras.optimizers.Adam(lr=lr)
 
     def linear_epsilon_decay(self, episode, decay_period=1000, warmup_episodes=0):
@@ -113,41 +113,49 @@ class DQNAgent(tf.keras.Model):
     @tf.function
     def make_decision(self, obs):
         if tf.random.uniform(shape=())>self.epsilon:
-            a = tf.math.argmax(self.qnet(obs), axis=-1)
+            act = tf.math.argmax(self.qnet(obs), axis=-1)
         else:
-            a = np.random.uniform(shape=[], minval=0, maxval=self.num_act, dtype=tf.int64)
-        return a
+            act = tf.random.uniform(shape=(), minval=0, maxval=self.num_act, dtype=tf.int64)
+        return act
 
-    # @tf.function
-    def train_one_step(self):
-        minibatch = self.replay_buffer.sample_batch(batch_size=self.batch_size)
+    def train_one_batch(self, data):
+        # update critic
         with tf.GradientTape() as tape:
-            # compute current Q
-            vals = self.dqn_active([minibatch['img'], minibatch['odom']])
-            oh_acts = tf.one_hot(minibatch['act'], depth=self.dim_act)
-            pred_qvals = tf.math.reduce_sum(tf.math.multiply(vals, oh_acts), axis=-1)
-            # compute target Q
-            nxt_vals = self.dqn_stable([minibatch['nxt_img'], minibatch['nxt_odom']])
-            nxt_acts = tf.math.argmax(self.dqn_active([minibatch['nxt_img'], minibatch['nxt_odom']]), axis=-1)
-            oh_nxt_acts = tf.one_hot(nxt_acts, depth=self.dim_act)
-            nxt_qvals = tf.math.reduce_sum(tf.math.multiply(nxt_vals, oh_nxt_acts), axis=-1)
-            targ_qvals = minibatch['rew'] + (1. - minibatch['done'])*self.gamma*nxt_qvals
-            # compute loss
-            loss_q = self.loss_fn(y_true=targ_qvals, y_pred=pred_qvals)
-            logging.info("loss_Q: {}".format(loss_q))
-        # gradient decent
-        grads = tape.gradient(loss_q, self.dqn_active.trainable_weights)
-        self.optimizer.apply_gradients(zip(grads, self.dqn_active.trainable_weights))
-        self.fit_cntr += 1
-        # update dqn_stable if C steps of q_val fitted
-        if not self.fit_cntr%self.sync_step:
-            self.dqn_stable.set_weights(self.dqn_active.get_weights())
+            pred_qval = tf.math.reduce_sum(self.qnet(data['obs'])*tf.one_hot(data['act'], self.num_act), axis=-1)
+            _, id_nexta = self.qnet.maxq(data['nobs'])
+            next_q = tf.math.reduce_sum(self.targ_qnet(data['nobs'])*tf.one_hot(id_nexta, self.num_act), axis=-1)
+            targ_qval = data['rew'] + self.gamma*(1 - data['done'])*next_q
+            # targ_qval = data['rew'] + self.gamma*(1 - data['done'])*tf.math.reduce_sum(self.targ_q(data['nobs'])*tf.one_hot(tf.math.argmax(self.q(data['nobs']), axis=1), self.act_dim),axis=1) # double DQN trick
+            loss_q = tf.keras.losses.MSE(y_true=targ_qval, y_pred=pred_qval)
+        grads = tape.gradient(loss_q, self.qnet.trainable_weights)
+        self.optimizer.apply_gradients(zip(grads, self.qnet.trainable_weights))
+        # Polyak average update target Q-nets
+        q_weights_update = []
+        for w_q, w_targ_q in zip(self.qnet.get_weights(), self.targ_qnet.get_weights()):
+            w_q_upd = self.polyak*w_targ_q
+            w_q_upd = w_q_upd + (1 - self.polyak)*w_q
+            q_weights_update.append(w_q_upd)
+        self.targ_qnet.set_weights(q_weights_update)
+
+        return loss_q
 
 
-if __name__=='__main__':
-    agent = DQNAgent(name='test_dqn_agent')
-    test_img = np.random.rand(4,150,150,3)
-    test_odom = np.random.randn(4,4)
-    qvals = agent.dqn_active([test_img, test_odom])
-    print("qvals: {}".format(qvals))
-
+#############################Test##############################
+# Uncomment following for testing the PPO agent
+# import gym
+# env = gym.make('LunarLander-v2')
+# dim_obs = env.observation_space.shape
+# num_act = env.action_space.n
+# agent = DQNAgent()
+# rb = DQNBuffer(dim_obs=dim_obs[0], size=int(1e4))
+# o = env.reset()
+# for _ in range(100):
+#     a = agent.make_decision(np.expand_dims(o, 0))
+#     o2, r, d, i = env.step(a.numpy())
+#     rb.store(o,a,r,d,o2)
+#     o = o2
+#     if d:
+#         break
+# data = rb.sample_batch(1024)
+# loss_q = agent.train_one_batch(data)
+#############################Test##############################
