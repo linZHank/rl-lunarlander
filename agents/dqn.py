@@ -62,68 +62,61 @@ class DQNBuffer:
                      done=tf.convert_to_tensor(self.done_buf[sample_ids]))
         return batch
 
-class DQNAgent:
+class Critic(tf.keras.Model):
+    def __init__(self, dim_obs, num_act, **kwargs):
+        super(Critic, self).__init__(name='critic', **kwargs)
+        self.dim_obs = dim_obs
+        self.num_act = num_act
+        self.value_net = tf.keras.Sequential(
+            [
+                tf.keras.layers.InputLayer(input_shape=dim_obs, name='critic_inputs'),
+                tf.keras.layers.Dense(256, activation='relu'),
+                tf.keras.layers.Dense(256, activation='relu'),
+                tf.keras.layers.Dense(num_act, activation=None, name='critic_outputs')
+            ]
+        )
+
+    @tf.function
+    def maxq(self, obs):
+        return tf.math.reduce_max(self.value_net(obs), axis=-1)
+
+    @tf.function
+    def call(self, obs):
+        return tf.squeeze(self.value_net(obs))
+
+class DQNAgent(tf.keras.Model):
     """
     DQN agent class. epsilon decay, epsilon greedy, train, etc..
     """
-    def __init__(self, name='dqn_agent', dim_img=(80,80,3), dim_odom=4, dim_act=5, buffer_size=int(5e5),
-                 decay_period=1000,
-                 warmup_episodes=200, init_epsilon=1., final_epsilon=.1, learning_rate=1e-4,
-                 loss_fn=tf.keras.losses.MeanSquaredError(), batch_size=64, discount_rate=0.99, sync_step=4096):
+    def __init__(self, dim_obs=(8,), num_act=4, lr=3e-4, gamma=0.99, polyak=.995, init_eps=1., final_eps=.1, **kwargs):
+        super(DQNAgent, self).__init__(name='dqn', **kwargs)
         # hyper parameters
-        self.name = name
-        self.dim_act = dim_act
-        self.decay_period = decay_period
-        self.warmup_episodes = warmup_episodes
-        self.init_epsilon = init_epsilon
-        self.learning_rate = learning_rate
-        self.final_epsilon = final_epsilon
-        self.optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate)
-        self.loss_fn = loss_fn
-        self.batch_size = batch_size
-        self.gamma = discount_rate
-        self.sync_step = sync_step
+        self.dim_obs = dim_obs
+        self.num_act = num_act
+        self.init_eps= init_eps
+        self.final_eps= final_eps
+        self.gamma = gamma
+        self.polyak = polyak
         # variables
-        self.epsilon = 1.
-        self.fit_cntr = 0
-        # build DQN model
-        ## test qnet, for testing in openai gym
-        self.dqn_active = tf.keras.Sequential(
-            [
-                tf.keras.layers.InputLayer(input_shape=(4,)), # CartPole
-                tf.keras.layers.Dense(64, activation='relu'),
-                tf.keras.layers.Dense(64, activation='relu'),
-                tf.keras.layers.Dense(2)
-            ]
-        )
-        # self.dqn_active = dqn(dim_img=dim_img, dim_odom=dim_odom, dim_act=dim_act)
-        self.dqn_active.summary()
-        self.dqn_stable = tf.keras.models.clone_model(self.dqn_active)
-        # build replay buffer
-        self.replay_buffer = ReplayBuffer(buf_size=buffer_size, dim_img=dim_img, dim_odom=dim_odom, dim_act=dim_act)
+        self.epsilon = init_eps
+        # DQN module
+        self.qnet = Critic(obs_dim, act_dim) 
+        self.targ_qnet = Critic(obs_dim, act_dim)
+        self.optimizer = tf.keras.optimizers.Adam(lr=lr)
 
-    def epsilon_greedy(self, img, odom):
-        if np.random.rand() > self.epsilon:
-            vals = self.dqn_active([np.expand_dims(img, axis=0), np.expand_dims(odom, axis=0)])
-            action = np.argmax(vals)
+    def linear_epsilon_decay(self, episode, decay_period=1000, warmup_episodes=0):
+        episodes_left = decay_period + warmup_episodes - episode
+        bonus = (self.init_eps - self.final_eps) * episodes_left / decay_period
+        bonus = np.clip(bonus, 0., self.init_eps-self.final_eps)
+        self.epsilon = self.final_eps + bonus
+
+    @tf.function
+    def make_decision(self, obs):
+        if tf.random.uniform(shape=())>self.epsilon:
+            a = tf.math.argmax(self.qnet(obs), axis=-1)
         else:
-            action = np.random.randint(self.dim_act)
-            logging.warning("{} performs a random action: {}".format(self.name, action))
-
-        return action
-            
-    def linear_epsilon_decay(self, curr_ep):
-        """
-        Begin at 1. until warmup_steps steps have been taken; then Linearly decay epsilon from 1. to final_eps in decay_period steps; and then Use epsilon from there on.
-        Args:
-            curr_ep: current episode index
-        Returns:
-            current epsilon for the agent's epsilon-greedy policy
-        """
-        episodes_left = self.decay_period + self.warmup_episodes - curr_ep
-        bonus = (self.init_epsilon - self.final_epsilon) * episodes_left / self.decay_period
-        bonus = np.clip(bonus, 0., self.init_epsilon-self.final_epsilon)
-        self.epsilon = self.final_epsilon + bonus
+            a = np.random.uniform(shape=[], minval=0, maxval=self.num_act, dtype=tf.int64)
+        return a
 
     # @tf.function
     def train_one_step(self):
