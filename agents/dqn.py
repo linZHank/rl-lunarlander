@@ -118,7 +118,10 @@ class DQNAgent(tf.keras.Model):
             act = tf.random.uniform(shape=(), minval=0, maxval=self.num_act, dtype=tf.int64)
         return act
 
-    def train_one_batch(self, data):
+    def train(self, data):
+        """
+        Train one batch
+        """
         # update critic
         with tf.GradientTape() as tape:
             pred_qval = tf.math.reduce_sum(self.qnet(data['obs'])*tf.one_hot(data['act'], self.num_act), axis=-1)
@@ -157,5 +160,5 @@ class DQNAgent(tf.keras.Model):
 #     if d:
 #         break
 # data = rb.sample_batch(1024)
-# loss_q = agent.train_one_batch(data)
+# loss_q = agent.train(data)
 #############################Test##############################
