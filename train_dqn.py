@@ -32,13 +32,13 @@ env.seed(RANDOM_SEED)
 np.random.seed(RANDOM_SEED)
 env.action_space.seed(RANDOM_SEED)
 # paramas
-num_episodes = int(1e4)
-batch_size = 1024
-update_freq = 100
+num_episodes = int(1e3)
+batch_size = 128
+update_freq = 20
 update_after = 1000
 decay_period = 500
 warmup_episodes = 20
-save_freq = 20
+save_freq = 50
 # variables
 ep_cntr, st_cntr = 0, 0
 stepwise_rewards, episodic_returns, sedimentary_returns = [], [], []
@@ -55,7 +55,7 @@ for e in range(num_episodes):
         ep_len += 1
         st_cntr += 1
         replay_buffer.store(obs, act, rew, done, nobs)
-        obs = nobs # SUPER CRITICAL!!!
+        obs = nobs.copy() # SUPER CRITICAL!!!
         if done or ep_len>=env.spec.max_episode_steps:
             ep_cntr += 1
             episodic_returns.append(ep_ret)
@@ -89,7 +89,7 @@ for ep in range(10):
     o, ep_ret = env.reset(), 0
     for st in range(env.spec.max_episode_steps):
         env.render()
-        act, _, _ = agent.make_decision(np.expand_dims(o, 0))
+        act = agent.make_decision(np.expand_dims(o, 0))
         o2, r, d, _ = env.step(act.numpy())
         ep_ret += r
         o = o2
