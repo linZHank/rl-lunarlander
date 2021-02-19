@@ -32,9 +32,9 @@ env.seed(RANDOM_SEED)
 np.random.seed(RANDOM_SEED)
 env.action_space.seed(RANDOM_SEED)
 # paramas
-num_episodes = int(1e3)
+num_episodes = int(3e3)
 batch_size = 128
-update_freq = 20
+update_freq = 50
 update_after = 1000
 decay_period = 500
 warmup_episodes = 20
@@ -56,20 +56,20 @@ for e in range(num_episodes):
         st_cntr += 1
         replay_buffer.store(obs, act, rew, done, nobs)
         obs = nobs.copy() # SUPER CRITICAL!!!
-        if done or ep_len>=env.spec.max_episode_steps:
-            ep_cntr += 1
-            episodic_returns.append(ep_ret)
-            sedimentary_returns.append(sum(episodic_returns)/ep_cntr)
-            episodic_steps.append(st_cntr)
-            logging.debug("\n----\nEpisode: {}, EpisodeLength: {}, TotalSteps: {}, StepsInLoop: {}, \nEpReturn: {}\n----\n".format(ep_cntr, ep_len, st_cntr, ep_len, ep_ret))
-            if not ep_cntr%save_freq:
-                agent.qnet.value_net.save(value_net_path) # save model
-            break
         if not st_cntr%update_freq and st_cntr>=update_after:
             for _ in range(update_freq):
                 minibatch = replay_buffer.sample_batch(batch_size=batch_size)
                 loss_q = agent.train(data=minibatch)
                 logging.debug("\nloss_q: {}".format(loss_q))
+        if done or ep_len>=env.spec.max_episode_steps:
+            ep_cntr += 1
+            episodic_returns.append(ep_ret)
+            sedimentary_returns.append(sum(episodic_returns)/ep_cntr)
+            episodic_steps.append(st_cntr)
+            logging.debug("\n----\nEpisode: {}, epsilon: {}, EpisodeLength: {}, TotalSteps: {}, StepsInLoop: {}, \nEpReturn: {}\n----\n".format(ep_cntr, agent.epsilon, ep_len, st_cntr, ep_len, ep_ret))
+            if not ep_cntr%save_freq:
+                agent.qnet.value_net.save(value_net_path) # save model
+            break
 
 # Save returns 
 np.save(os.path.join(save_dir, 'episodic_returns.npy'), episodic_returns)

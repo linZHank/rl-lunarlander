@@ -75,10 +75,10 @@ class Critic(tf.keras.Model):
 
     @tf.function
     def maxq(self, obs):
-        qval = self.call(obs)
-        val= tf.math.reduce_max(qval, axis=-1)
-        idx = tf.math.argmax(qval, axis=-1)
-        return val, idx
+        vals = tf.squeeze(self.value_net(obs))
+        max_val= tf.math.reduce_max(vals, axis=-1)
+        max_idx = tf.math.argmax(vals, axis=-1)
+        return max_val, max_idx
 
     @tf.function
     def call(self, obs):
@@ -94,7 +94,8 @@ class DQNAgent(tf.keras.Model):
         self.dim_obs = dim_obs
         self.num_act = num_act
         self.init_eps= init_eps
-        self.final_eps= final_eps
+        self.final_eps = final_eps
+        self.lr = lr
         self.gamma = gamma
         self.polyak = polyak
         # variables
@@ -103,6 +104,7 @@ class DQNAgent(tf.keras.Model):
         self.qnet = Critic(dim_obs, num_act) 
         self.targ_qnet = Critic(dim_obs, num_act)
         self.optimizer = tf.keras.optimizers.Adam(lr=lr)
+        self.loss_fn = tf.keras.losses.MeanSquaredError()
 
     def linear_epsilon_decay(self, episode, decay_period=1000, warmup_episodes=0):
         episodes_left = decay_period + warmup_episodes - episode
@@ -124,12 +126,14 @@ class DQNAgent(tf.keras.Model):
         """
         # update critic
         with tf.GradientTape() as tape:
+            tape.watch(self.qnet.trainable_variables)
             pred_qval = tf.math.reduce_sum(self.qnet(data['obs'])*tf.one_hot(data['act'], self.num_act), axis=-1)
             _, id_nexta = self.qnet.maxq(data['nobs'])
             next_q = tf.math.reduce_sum(self.targ_qnet(data['nobs'])*tf.one_hot(id_nexta, self.num_act), axis=-1)
             targ_qval = data['rew'] + self.gamma*(1 - data['done'])*next_q
-            # targ_qval = data['rew'] + self.gamma*(1 - data['done'])*tf.math.reduce_sum(self.targ_q(data['nobs'])*tf.one_hot(tf.math.argmax(self.q(data['nobs']), axis=1), self.act_dim),axis=1) # double DQN trick
-            loss_q = tf.keras.losses.MSE(y_true=targ_qval, y_pred=pred_qval)
+            # targ_qval = data['rew'] + self.gamma*(1 - data['done'])*tf.math.reduce_sum(self.targ_qnet(data['nobs'])*tf.one_hot(tf.math.argmax(self.qnet(data['nobs']), axis=1), self.num_act), axis=-1) # double DQN trick
+            # loss_q = tf.keras.losses.MSE(y_true=targ_qval, y_pred=pred_qval)
+            loss_q = self.loss_fn(targ_qval, pred_qval)
         grads = tape.gradient(loss_q, self.qnet.trainable_weights)
         self.optimizer.apply_gradients(zip(grads, self.qnet.trainable_weights))
         # Polyak average update target Q-nets

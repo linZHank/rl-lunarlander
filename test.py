@@ -1,13 +1,15 @@
 import gym
 
 env = gym.make('LunarLander-v2')
+env.reset()
+c = 0 # episode length counter
+while True:
+    env.render()
+    a = env.action_space.sample()
+    o, r, d, i = env.step(a)
+    c += 1
+    if d or c>=env.spec.max_episode_steps:
+        env.reset()
+        c = 0
 
-for _ in range(10):
-    env.reset()
-    while True:
-        env.render()
-        action = env.action_space.sample() # random action
-        obs, rew, done, info = env.step(action)
-        print(obs, rew, done, info)
-        if done:
-            break
+
