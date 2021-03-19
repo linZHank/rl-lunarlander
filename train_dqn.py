@@ -32,7 +32,7 @@ env.seed(RANDOM_SEED)
 np.random.seed(RANDOM_SEED)
 env.action_space.seed(RANDOM_SEED)
 # paramas
-num_episodes = int(3e3)
+num_episodes = int(1500)
 batch_size = 128
 update_freq = 50
 update_after = 1000

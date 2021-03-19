@@ -1,5 +1,5 @@
 """ 
-A DQN type agent class for pe_env_discrete 
+A DQN type agent class: Compute Q-value with both state and action as inputs. 
 """
 import tensorflow as tf
 import numpy as np
@@ -35,7 +35,7 @@ class DQNBuffer:
 
     def __init__(self, dim_obs, size):
         self.obs_buf = np.zeros((size, dim_obs), dtype=np.float32)
-        self.act_buf = np.zeros(size, dtype=np.int32)
+        self.act_buf = np.zeros((size, 1), dtype=np.float32)
         self.rew_buf = np.zeros(size, dtype=np.float32)
         self.done_buf = np.zeros(size, dtype=np.float32)
         self.nobs_buf = np.zeros((size, dim_obs), dtype=np.float32)
@@ -62,32 +62,21 @@ class DQNBuffer:
         return data
 
 class Critic(tf.keras.Model):
-    def __init__(self, dim_obs, num_act, **kwargs):
+    def __init__(self, dim_obs, **kwargs):
         super(Critic, self).__init__(name='critic', **kwargs)
         self.dim_obs = dim_obs
-        self.num_act = num_act
-        self.value_net = tf.keras.Sequential(
-            [
-                tf.keras.layers.InputLayer(input_shape=dim_obs, name='critic_inputs'),
-                tf.keras.layers.Dense(256, activation='relu'),
-                tf.keras.layers.Dense(256, activation='relu'),
-                tf.keras.layers.Dense(num_act, activation=None, name='critic_outputs')
-            ]
-        )
-
-    # @tf.function
-    # def maxq(self, obs):
-    #     vals = tf.squeeze(self.value_net(obs))
-    #     max_val= tf.math.reduce_max(vals, axis=-1)
-    #     max_idx = tf.math.argmax(vals, axis=-1)
-    #     return max_val, max_idx
+        inputs_s = tf.keras.Input(shape=dim_obs, name='critic_inputs_state')
+        inputs_a = tf.keras.Input(shape=(1,), name='critic_inputs_action')
+        x = tf.keras.layers.concatenate([inputs_s, inputs_a])
+        x = tf.keras.layers.Dense(256, activation='relu')(x)
+        x = tf.keras.layers.Dense(256, activation='relu')(x)
+        outputs = tf.keras.layers.Dense(1, activation=None)(x)
+        self.value_net = tf.keras.Model(inputs=[inputs_s, inputs_a], outputs=outputs)
 
     @tf.function
-    def call(self, obs):
-        vals = tf.squeeze(self.value_net(obs))
-        # max_v= tf.math.reduce_max(vals, axis=-1)
-        # max_i = tf.math.argmax(vals, axis=-1)
-        return vals #, max_v, max_i
+    def call(self, obs, act):
+        val = tf.squeeze(self.value_net([obs, act]))
+        return val
 
 class DQNAgent(tf.keras.Model):
     """
@@ -106,8 +95,8 @@ class DQNAgent(tf.keras.Model):
         # variables
         self.epsilon = init_eps
         # DQN module
-        self.qnet = Critic(dim_obs, num_act) 
-        self.targ_qnet = Critic(dim_obs, num_act)
+        self.qnet = Critic(dim_obs) 
+        self.targ_qnet = Critic(dim_obs)
         self.optimizer = tf.keras.optimizers.Adam(lr=lr)
         self.loss_fn = tf.keras.losses.MeanSquaredError()
 
@@ -120,7 +109,7 @@ class DQNAgent(tf.keras.Model):
     @tf.function
     def make_decision(self, obs):
         if tf.random.uniform(shape=())>self.epsilon:
-            act = tf.math.argmax(self.qnet(obs), axis=-1)
+            act = tf.math.argmax([self.qnet(obs, tf.expand_dims([i],0)) for i in range(self.num_act)], axis=-1)
         else:
             act = tf.random.uniform(shape=(), minval=0, maxval=self.num_act, dtype=tf.int64)
         return act
@@ -132,6 +121,9 @@ class DQNAgent(tf.keras.Model):
         # update critic
         with tf.GradientTape() as tape:
             tape.watch(self.qnet.trainable_variables)
+            pred_qval = self.qnet(data['obs'], data['act'])
+            next_q = self.targ_qnet([data['nobs'], tf.ones(shape=(data['nobs'].shape[0], 1))])
+
             pred_qval = tf.math.reduce_sum(self.qnet(data['obs'])*tf.one_hot(data['act'], self.num_act), axis=-1)
             # next two lines implement Doubld DQN trick
             id_nexta = tf.argmax(self.qnet(data['nobs']), axis=-1)
@@ -155,20 +147,20 @@ class DQNAgent(tf.keras.Model):
 
 #############################Test##############################
 # Uncomment following for testing the PPO agent
-# import gym
-# env = gym.make('LunarLander-v2')
-# dim_obs = env.observation_space.shape
-# num_act = env.action_space.n
-# agent = DQNAgent()
-# rb = DQNBuffer(dim_obs=dim_obs[0], size=int(1e4))
-# o = env.reset()
-# for _ in range(100):
-#     a = agent.make_decision(np.expand_dims(o, 0))
-#     o2, r, d, i = env.step(a.numpy())
-#     rb.store(o,a,r,d,o2)
-#     o = o2
-#     if d:
-#         break
-# data = rb.sample_batch(1024)
+import gym
+env = gym.make('LunarLander-v2')
+dim_obs = env.observation_space.shape
+num_act = env.action_space.n
+agent = DQNAgent()
+rb = DQNBuffer(dim_obs=dim_obs[0], size=int(1e4))
+o = env.reset()
+for _ in range(100):
+    a = agent.make_decision(np.expand_dims(o, 0))
+    o2, r, d, i = env.step(a.numpy())
+    rb.store(o,a,r,d,o2)
+    o = o2
+    if d:
+        break
+data = rb.sample_batch(1024)
 # loss_q = agent.train(data)
 #############################Test##############################
