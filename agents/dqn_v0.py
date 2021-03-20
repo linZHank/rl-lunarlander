@@ -82,7 +82,7 @@ class DQNAgent(tf.keras.Model):
     """
     DQN agent class. epsilon decay, epsilon greedy, train, etc..
     """
-    def __init__(self, dim_obs=(8,), num_act=4, lr=3e-4, gamma=0.99, polyak=.995, init_eps=1., final_eps=.1, **kwargs):
+    def __init__(self, dim_obs=(8,), num_act=4, lr=3e-4, gamma=0.99, polyak=.995, init_eps=1., final_eps=.1, update_freq=1000, **kwargs):
         super(DQNAgent, self).__init__(name='dqn', **kwargs)
         # hyper parameters
         self.dim_obs = dim_obs
@@ -94,6 +94,8 @@ class DQNAgent(tf.keras.Model):
         self.polyak = polyak
         # variables
         self.epsilon = init_eps
+        self.train_counter = 0
+        self.update_freq = update_freq
         # DQN module
         self.qnet = Critic(dim_obs) 
         self.targ_qnet = Critic(dim_obs)
@@ -131,13 +133,19 @@ class DQNAgent(tf.keras.Model):
             loss_q = tf.keras.losses.MSE(targ_qval, pred_qval)
         grads = tape.gradient(loss_q, self.qnet.trainable_weights)
         self.optimizer.apply_gradients(zip(grads, self.qnet.trainable_weights))
-        # Polyak average update target Q-nets
-        q_weights_update = []
-        for w_q, w_targ_q in zip(self.qnet.get_weights(), self.targ_qnet.get_weights()):
-            w_q_upd = self.polyak*w_targ_q
-            w_q_upd = w_q_upd + (1 - self.polyak)*w_q
-            q_weights_update.append(w_q_upd)
-        self.targ_qnet.set_weights(q_weights_update)
+        self.train_counter += 1
+        # update target Q-nets
+        if self.polyak <= 0:
+            if not self.train_counter % self.update_freq:
+                w = self.qnet.get_weights()
+                self.targ_qnet.set_weights(w)
+        else:
+            q_weights_update = []
+            for w_q, w_targ_q in zip(self.qnet.get_weights(), self.targ_qnet.get_weights()):
+                w_q_upd = self.polyak*w_targ_q
+                w_q_upd = w_q_upd + (1 - self.polyak)*w_q
+                q_weights_update.append(w_q_upd)
+            self.targ_qnet.set_weights(q_weights_update)
 
         return loss_q
 
