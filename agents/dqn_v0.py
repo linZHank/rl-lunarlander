@@ -122,16 +122,13 @@ class DQNAgent(tf.keras.Model):
         with tf.GradientTape() as tape:
             tape.watch(self.qnet.trainable_variables)
             pred_qval = self.qnet(data['obs'], data['act'])
-            next_q = self.targ_qnet([data['nobs'], tf.ones(shape=(data['nobs'].shape[0], 1))])
-
-            pred_qval = tf.math.reduce_sum(self.qnet(data['obs'])*tf.one_hot(data['act'], self.num_act), axis=-1)
-            # next two lines implement Doubld DQN trick
-            id_nexta = tf.argmax(self.qnet(data['nobs']), axis=-1)
-            next_q = tf.math.reduce_sum(self.targ_qnet(data['nobs'])*tf.one_hot(id_nexta, self.num_act), axis=-1) 
-            targ_qval = data['rew'] + self.gamma*(1 - data['done'])*next_q
-            # targ_qval = data['rew'] + self.gamma*(1 - data['done'])*tf.math.reduce_sum(self.targ_qnet(data['nobs'])*tf.one_hot(tf.math.argmax(self.qnet(data['nobs']), axis=1), self.num_act), axis=-1) # double DQN trick
-            # loss_q = tf.keras.losses.MSE(y_true=targ_qval, y_pred=pred_qval)
-            loss_q = self.loss_fn(targ_qval, pred_qval)
+            next_q = []
+            for i in range(self.num_act):
+                next_q.append(self.targ_qnet(data['nobs'], i*tf.ones(shape=(data['nobs'].shape[0], 1))))
+            next_q = tf.stack(next_q, axis=1)
+            max_nq = tf.math.reduce_max(next_q, axis=1)
+            targ_qval = data['rew'] + self.gamma*(1-data['done'])*max_nq
+            loss_q = tf.keras.losses.MSE(targ_qval, pred_qval)
         grads = tape.gradient(loss_q, self.qnet.trainable_weights)
         self.optimizer.apply_gradients(zip(grads, self.qnet.trainable_weights))
         # Polyak average update target Q-nets
