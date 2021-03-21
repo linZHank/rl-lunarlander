@@ -82,8 +82,8 @@ class DQNAgent(tf.keras.Model):
     """
     DQN agent class. epsilon decay, epsilon greedy, train, etc..
     """
-    def __init__(self, dim_obs=(8,), num_act=4, lr=3e-4, gamma=0.99, polyak=.995, init_eps=1., final_eps=.1, update_freq=1000, **kwargs):
-        super(DQNAgent, self).__init__(name='dqn', **kwargs)
+    def __init__(self, dim_obs=(8,), num_act=4, lr=3e-4, gamma=0.99, polyak=0, init_eps=1., final_eps=.1, update_freq=1000, **kwargs):
+        super(DQNAgent, self).__init__(name='dqn_v0', **kwargs)
         # hyper parameters
         self.dim_obs = dim_obs
         self.num_act = num_act
@@ -152,20 +152,20 @@ class DQNAgent(tf.keras.Model):
 
 #############################Test##############################
 # Uncomment following for testing the PPO agent
-import gym
-env = gym.make('LunarLander-v2')
-dim_obs = env.observation_space.shape
-num_act = env.action_space.n
-agent = DQNAgent()
-rb = DQNBuffer(dim_obs=dim_obs[0], size=int(1e4))
-o = env.reset()
-for _ in range(100):
-    a = agent.make_decision(np.expand_dims(o, 0))
-    o2, r, d, i = env.step(a.numpy())
-    rb.store(o,a,r,d,o2)
-    o = o2
-    if d:
-        break
-data = rb.sample_batch(1024)
+# import gym
+# env = gym.make('LunarLander-v2')
+# dim_obs = env.observation_space.shape
+# num_act = env.action_space.n
+# agent = DQNAgent()
+# rb = DQNBuffer(dim_obs=dim_obs[0], size=int(1e4))
+# o = env.reset()
+# for _ in range(100):
+#     a = agent.make_decision(np.expand_dims(o, 0))
+#     o2, r, d, i = env.step(a.numpy())
+#     rb.store(o,a,r,d,o2)
+#     o = o2
+#     if d:
+#         break
+# data = rb.sample_batch(1024)
 # loss_q = agent.train(data)
 #############################Test##############################
