@@ -1,6 +1,7 @@
 """ 
 DQN type agent class
 """
+import time
 import numpy as np
 import tensorflow as tf
 print(tf.__version__)
@@ -45,23 +46,28 @@ class DQNBuffer:
 
 
 class Critic(tf.keras.Model):
-    def __init__(self, dim_obs, num_act, hidden_sizes, activation, **kwargs):
+    def __init__(self, dim_obs, num_act, hidden_sizes, activation='relu', **kwargs):
         super(Critic, self).__init__(name='critic', **kwargs)
         inputs = tf.keras.Input(shape=(dim_obs,))
+        self.dim_obs = dim_obs
+        self.num_act = num_act
+        self.hidden_sizes = hidden_sizes
         x = tf.keras.layers.Dense(hidden_sizes[0], activation=activation)(inputs)
         for i in range(1, len(hidden_sizes)):
             x = tf.keras.layers.Dense(hidden_sizes[i], activation=activation)(x)
         outputs = tf.keras.layers.Dense(num_act)(x)
-        self.q_net = tf.keras.Model(inputs=inputs, outputs=outputs)
+        self.value_net = tf.keras.Model(inputs=inputs, outputs=outputs)
         
     @tf.function
     def call(self, obs):
-        return self.q_net(obs)
+        vals = tf.squeeze(self.value_net(obs))
+        return vals
+        # return self.q_net(obs)
         # return tf.squeeze(qval, axis=-1)
 
 class DQNAgent(tf.keras.Model):
-    def __init__(self, dim_obs, num_act, hidden_sizes=(256,256), activation='relu', gamma = 0.99,
-                 lr=2e-4, polyak=0.995, **kwargs):
+    def __init__(self, dim_obs, num_act, hidden_sizes=(256,256), activation='relu', gamma=.99,
+                 lr=3e-4, polyak=0.995, **kwargs):
         super(DQNAgent, self).__init__(name='dqn', **kwargs)
         # params
         self.dim_obs = dim_obs
@@ -71,8 +77,8 @@ class DQNAgent(tf.keras.Model):
         self.init_eps = 1.
         self.final_eps = .1
         # model
-        self.q = Critic(dim_obs, num_act, hidden_sizes, activation) 
-        self.targ_q = Critic(dim_obs, num_act, hidden_sizes, activation)
+        self.qnet = Critic(dim_obs, num_act, hidden_sizes, activation) 
+        self.targ_qnet = Critic(dim_obs, num_act, hidden_sizes, activation)
         self.optimizer = tf.keras.optimizers.Adam(lr=lr)
         # variable
         self.epsilon = self.init_eps
@@ -85,7 +91,7 @@ class DQNAgent(tf.keras.Model):
 
     def make_decision(self, obs):
         if tf.random.uniform(shape=())>self.epsilon:
-            act = tf.math.argmax(self.q(obs), axis=-1)
+            act = tf.math.argmax(self.qnet(obs), axis=-1)
         # if np.random.rand() > self.epsilon:
             # a = np.argmax(self.q(obs))
         else:
@@ -96,19 +102,19 @@ class DQNAgent(tf.keras.Model):
     def train_one_batch(self, data):
         # update critic
         with tf.GradientTape() as tape:
-            tape.watch(self.q.trainable_weights)
-            pred_qval = tf.math.reduce_sum(self.q(data['obs']) * tf.one_hot(data['act'], self.num_act), axis=-1)
-            targ_qval = data['rew'] + self.gamma*(1 - data['done'])*tf.math.reduce_sum(self.targ_q(data['nobs'])*tf.one_hot(tf.math.argmax(self.q(data['nobs']),axis=1), self.num_act),axis=1) # double DQN trick
+            tape.watch(self.qnet.trainable_weights)
+            pred_qval = tf.math.reduce_sum(self.qnet(data['obs']) * tf.one_hot(data['act'], self.num_act), axis=-1)
+            targ_qval = data['rew'] + self.gamma*(1 - data['done'])*tf.math.reduce_sum(self.targ_qnet(data['nobs'])*tf.one_hot(tf.math.argmax(self.qnet(data['nobs']),axis=1), self.num_act),axis=1) # double DQN trick
             loss_q = tf.keras.losses.MSE(y_true=targ_qval, y_pred=pred_qval)
-        grads = tape.gradient(loss_q, self.q.trainable_weights)
-        self.optimizer.apply_gradients(zip(grads, self.q.trainable_weights))
+        grads = tape.gradient(loss_q, self.qnet.trainable_weights)
+        self.optimizer.apply_gradients(zip(grads, self.qnet.trainable_weights))
         # Polyak average update target Q-nets
         q_weights_update = []
-        for w_q, w_targ_q in zip(self.q.get_weights(), self.targ_q.get_weights()):
+        for w_q, w_targ_q in zip(self.qnet.get_weights(), self.targ_qnet.get_weights()):
             w_q_upd = self.polyak*w_targ_q
             w_q_upd = w_q_upd + (1 - self.polyak)*w_q
             q_weights_update.append(w_q_upd)
-        self.targ_q.set_weights(q_weights_update)
+        self.targ_qnet.set_weights(q_weights_update)
 
         return loss_q
 
@@ -212,7 +218,7 @@ decay_period = 500
 warmup_episodes = 10
 dqn = DQNAgent(dim_obs=dim_obs, num_act=num_act)
 replay_buffer = DQNBuffer(dim_obs=dim_obs, size=int(1e5)) 
-total_steps = int(1e5)
+total_steps = int(5e4)
 episodic_returns = []
 sedimentary_returns = []
 episodic_steps = []
