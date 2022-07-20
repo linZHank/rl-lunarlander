@@ -20,37 +20,49 @@ agent = DQNAgent(
     target_period=100,
     learning_rate=3e-4,
 )
-rng = hk.PRNGSequence(jax.random.PRNGKey(19))
+RANDOM_SEED = 19
+env.seed(RANDOM_SEED)
+np.random.seed(RANDOM_SEED)
+env.action_space.seed(RANDOM_SEED)
+rng = hk.PRNGSequence(jax.random.PRNGKey(RANDOM_SEED))
 params = agent.init_params(next(rng))
 learner_state = agent.init_learner(params)
 buf = ReplayBuffer(capacity=int(1e6))
-total_steps = 0
-for ep in range(20):
-    # Prepare agent, environment and accumulator for a new episode.
-    actor_state = agent.init_actor()
-    pobs = env.reset()
-    done = False
-    rew, ep_return = 0, 0
-    while not done:
-        # env.render()
-        actor_output = agent.make_decision(
-            params=params,
-            obs=pobs,
-            episode_count=ep,
-            key=next(rng),
-            eval_flag=False,
+# init env
+pobs = env.reset()
+done = False
+ep, ep_return = 0, 0
+# start learning
+tic = time.time()
+for st in range(int(3e5)):
+    actor_output = agent.make_decision(
+        params=params,
+        obs=pobs,
+        episode_count=ep,
+        key=next(rng),
+        eval_flag=False,
+    )
+    act = int(actor_output.action)
+    nobs, rew, done, info = env.step(act)
+    # accumulate experience
+    buf.store(pobs, act, rew, done, nobs)
+    ep_return += rew
+    pobs = nobs
+    # learn
+    if buf.is_ready(batch_size=1024):
+        params, learner_state = agent.learn_step(
+            params, buf.sample(batch_size=1024, discount_factor=0.99), learner_state, next(rng)
         )
-        act = int(actor_output.action)
-        nobs, rew, done, info = env.step(act)
-        total_steps += 1
-        # accumulate experience
-        buf.store(pobs, act, rew, done, nobs)
-        ep_return += rew
-        pobs = nobs
-        # learn
-        if buf.is_ready(batch_size=1024):
-            params, learner_state = agent.learn_step(
-                params, buf.sample(batch_size=1024, discount_factor=0.99), learner_state, next(rng)
-            )
-    print(f"episode {ep+1} return: {ep_return}")
-    print(f"total steps: {total_steps}")
+    if done:
+        print(f"episode {ep+1} return: {ep_return}")
+        print(f"total steps: {st+1}")
+        pobs = env.reset()
+        done = False
+        ep_return = 0
+        ep += 1
+
+# time
+toc = time.time()
+print(f"episode {ep+1} return: {ep_return}")
+print(f"total steps: {st+1}")
+print(f"Training time: {toc-tic}")

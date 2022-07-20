@@ -67,8 +67,7 @@ class DQNAgent:
         self._observation_space = observation_space
         self._action_space = action_space
         self._target_period = target_period
-        # Neural net and optimiser.
-        self._critic_net = build_network(action_space.n)
+        # Neural net and optimiser. self._critic_net = build_network(action_space.n)
         self._optimizer = optax.adam(learning_rate)
         # self._epsilon_by_frame = optax.polynomial_schedule(**epsilon_cfg)
         self._epsilon_by_frame = optax.polynomial_schedule(
@@ -103,9 +102,6 @@ class DQNAgent:
         act_epsgreedy = rlax.epsilon_greedy(epsilon).sample(key, qval)
         act_greedy = rlax.greedy().sample(key, qval)
         action = jax.lax.select(eval_flag, act_greedy, act_epsgreedy)
-        # return ActorOutput(action=action, q_value=qval), ActorState(
-        #     actor_state.count + 1
-        # )
         return ActorOutput(action=action, q_value=qval)
 
     def learn_step(self, params, data, learner_state, unused_key):
@@ -135,59 +131,8 @@ class DQNAgent:
         pred_qval = self._critic_net.apply(online_params, pobs_batch)
         next_qval = self._critic_net.apply(target_params, nobs_batch)
         deul_qval = self._critic_net.apply(online_params, nobs_batch)
-        # q_t_val = self._network.apply(target_params, obs_t)
-        # q_t_select = self._network.apply(online_params, obs_t)
-        # td_error = batched_loss(q_tm1, a_tm1, r_t, discount_t, q_t_val, q_t_select)
         batched_loss = jax.vmap(rlax.double_q_learning)
         td_error = batched_loss(
             pred_qval, acts_batch, rews_batch, disc_batch, next_qval, deul_qval
         )
         return jnp.mean(rlax.l2_loss(td_error))
-
-
-# test, TODO: print loss
-# import gym
-#
-# env = gym.make("LunarLander-v2")
-# agent = DQNAgent(
-#     observation_space=env.observation_space,
-#     action_space=env.action_space,
-#     target_period=50,
-#     learning_rate=3e-4,
-# )
-# rng = hk.PRNGSequence(jax.random.PRNGKey(19))
-# params = agent.init_params(next(rng))
-# learner_state = agent.init_learner(params)
-# buf = ReplayBuffer(capacity=int(1e6))
-# total_steps = 0
-# for ep in range(1000):
-#     # Prepare agent, environment and accumulator for a new episode.
-#     actor_state = agent.init_actor()
-#     pobs = env.reset()
-#     done = False
-#     rew, ep_return = 0, 0
-#     while not done:
-#         # env.render()
-#         actor_output, actor_state = agent.make_decision(
-#             params=params,
-#             obs=pobs,
-#             episode_count=ep,
-#             key=next(rng),
-#             eval_flag=False,
-#         )
-#         act = int(actor_output.action)
-#         nobs, rew, done, info = env.step(act)
-#         total_steps += 1
-#         # accumulate experience
-#         buf.store(pobs, act, rew, done, nobs)
-#         ep_return += rew
-#         pobs = nobs
-#         # learn
-#         if buf.is_ready(batch_size=1024):
-#             params, learner_state = agent.learn_step(
-#                 params, buf.sample(batch_size=1024, discount_factor=0.99), learner_state, next(rng)
-#             )
-#     print(f"episode {ep+1} return: {ep_return}")
-#     print(f"total steps: {total_steps}")
-#
-
