@@ -67,7 +67,8 @@ class DQNAgent:
         self._observation_space = observation_space
         self._action_space = action_space
         self._target_period = target_period
-        # Neural net and optimiser. self._critic_net = build_network(action_space.n)
+        # Neural net and optimiser. 
+        self._critic_net = build_network(action_space.n)
         self._optimizer = optax.adam(learning_rate)
         # self._epsilon_by_frame = optax.polynomial_schedule(**epsilon_cfg)
         self._epsilon_by_frame = optax.polynomial_schedule(
