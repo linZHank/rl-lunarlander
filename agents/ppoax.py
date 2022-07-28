@@ -24,20 +24,22 @@ def build_network(num_outputs: int) -> hk.Transformed:
 
 class CategoricalActor:
 
-    def __init__(self, observation_space, action_space):
-        self.observation_space = observation_space
-        self.action_space = action_space
-        self.policy_net = build_network(num_outputs=action_space.n)
-        self.init_policy()
+    def __init__(self, dim_obs, num_act, key):
+        self.dim_obs = dim_obs
+        self.num_act = num_act
+        self.policy_net = build_network(num_outputs=num_act)
+        self.init_policy_net(key)
 
-    def init_policy(self, key):
-        sample_input = self.observation_space.sample()
+    def init_policy_net(self, key):
+        sample_input = jax.random.normal(key, shape=(self.dim_obs, ))
         sample_input = jnp.expand_dims(sample_input, 0)
         self.weights = self.policy_net.init(key, sample_input)
-        Weights.actor = self.weights
 
-    def gen_policy(self, weights, obs):
-        logits = jnp.squeeze(self.policy_net.apply(weights, obs))
+    def gen_policy(self, obs):
+        """
+        pi(a|s)
+        """
+        logits = jnp.squeeze(self.policy_net.apply(self.weights, obs))
         policy = distrax.Categorical(logits=logits)
 
         return policy
@@ -47,34 +49,34 @@ class CategoricalActor:
 
         return logp_a
 
-    def __call__(self, weights, obs, act=None):
-        policy = self.gen_policy(weights, obs)
+    def __call__(self, obs, act=None):
+        policy = self.gen_policy(obs)
         logp_a = None
         if act is not None:
             logp_a = self.log_prob(policy, act)
 
         return policy, logp_a
 
-class PPOAgent:
-    """A simple PPO agent. Compatible with discrete gym envs"""
-
-    def __init__(self, observation_space, action_space, learning_rate):
-        self.observation_space = observation_space
-        self.action_space = action_space
-        # Neural net and optimiser.
-        self.actor = CategoricalActor(
-            dim_obs=observation_space.shape[0],
-            num_act=action_space.n,
-        )
-        self.critic = build_network(num_outputs=1)
-        self.actor_optimizer = optax.adam(learning_rate)
-        self.critic = optax.adam(learning_rate)
-        # self._epsilon_by_frame = optax.polynomial_schedule(**epsilon_cfg)
-        # Jitting for speed.
-        self.make_decision = jax.jit(self.make_decision)
-        self.learn_step = jax.jit(self.learn_step)
-
-    def make_decision(self, obs):
-        pass
-
+# class PPOAgent:
+#     """A simple PPO agent. Compatible with discrete gym envs"""
+#
+#     def __init__(self, observation_space, action_space, learning_rate):
+#         self.observation_space = observation_space
+#         self.action_space = action_space
+#         # Neural net and optimiser.
+#         self.actor = CategoricalActor(
+#             dim_obs=observation_space.shape[0],
+#             num_act=action_space.n,
+#         )
+#         self.critic = build_network(num_outputs=1)
+#         self.actor_optimizer = optax.adam(learning_rate)
+#         self.critic = optax.adam(learning_rate)
+#         # self._epsilon_by_frame = optax.polynomial_schedule(**epsilon_cfg)
+#         # Jitting for speed.
+#         self.make_decision = jax.jit(self.make_decision)
+#         self.learn_step = jax.jit(self.learn_step)
+#
+#     def make_decision(self, obs):
+#         pass
+#
 
