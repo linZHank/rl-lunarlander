@@ -24,7 +24,7 @@ def build_network(num_outputs: int) -> hk.Transformed:
 
 class CategoricalActor:
 
-    def __init__(self, dim_obs, num_act, key):
+    def __init__(self, dim_obs: int, num_act: int, key: jnp.DeviceArray):
         self.dim_obs = dim_obs
         self.num_act = num_act
         self.policy_net = build_network(num_outputs=num_act)
@@ -32,9 +32,9 @@ class CategoricalActor:
         self.policy_distribution = None
         self.init_policy_net(key)
 
-    def init_policy_net(self, key):
+    def init_policy_net(self, key: jnp.DeviceArray):
         sample_input = jax.random.normal(key, shape=(self.dim_obs, ))
-        sample_input = jnp.expand_dims(sample_input, 0)
+        # sample_input = jnp.expand_dims(sample_input, 0)
         self.weights = self.policy_net.init(key, sample_input)
 
     def gen_policy(self, obs):
@@ -58,6 +58,22 @@ class CategoricalActor:
             logp_a = self.log_prob(act)
 
         return self.policy_distribution, logp_a
+
+class Critic:
+    def __init__(self, dim_obs, key):
+        self.dim_obs = dim_obs
+        self.value_net = build_network(num_outputs=1)
+        self.weights = None
+        self.init_value_net(key)
+
+    def init_value_net(self, key):
+        sample_input = jax.random.normal(key, shape=(self.dim_obs, ))
+        # sample_input = jnp.expand_dims(sample_input, 0)
+        self.weights = self.value_net.init(key, sample_input)
+
+    def __call__(self, obs):
+
+        return self.value_net.apply(self.weights, obs)
 
 # class PPOAgent:
 #     """A simple PPO agent. Compatible with discrete gym envs"""
