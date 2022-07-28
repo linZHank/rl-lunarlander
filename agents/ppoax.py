@@ -28,6 +28,8 @@ class CategoricalActor:
         self.dim_obs = dim_obs
         self.num_act = num_act
         self.policy_net = build_network(num_outputs=num_act)
+        self.weights = None
+        self.policy_distribution = None
         self.init_policy_net(key)
 
     def init_policy_net(self, key):
@@ -40,22 +42,22 @@ class CategoricalActor:
         pi(a|s)
         """
         logits = jnp.squeeze(self.policy_net.apply(self.weights, obs))
-        policy = distrax.Categorical(logits=logits)
+        self.policy_distribution = distrax.Categorical(logits=logits)
 
-        return policy
+        # return self.policy
 
-    def log_prob(self, policy, action):
-        logp_a = policy.log_prob(action)
+    def log_prob(self, action):
+        logp_a = self.policy_distribution.log_prob(action)
 
         return logp_a
 
     def __call__(self, obs, act=None):
-        policy = self.gen_policy(obs)
+        self.gen_policy(obs)
         logp_a = None
         if act is not None:
-            logp_a = self.log_prob(policy, act)
+            logp_a = self.log_prob(act)
 
-        return policy, logp_a
+        return self.policy_distribution, logp_a
 
 # class PPOAgent:
 #     """A simple PPO agent. Compatible with discrete gym envs"""
