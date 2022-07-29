@@ -75,26 +75,77 @@ class Critic:
 
         return self.value_net.apply(self.weights, obs)
 
-# class PPOAgent:
-#     """A simple PPO agent. Compatible with discrete gym envs"""
-#
-#     def __init__(self, observation_space, action_space, learning_rate):
-#         self.observation_space = observation_space
-#         self.action_space = action_space
-#         # Neural net and optimiser.
-#         self.actor = CategoricalActor(
-#             dim_obs=observation_space.shape[0],
-#             num_act=action_space.n,
-#         )
-#         self.critic = build_network(num_outputs=1)
-#         self.actor_optimizer = optax.adam(learning_rate)
-#         self.critic = optax.adam(learning_rate)
-#         # self._epsilon_by_frame = optax.polynomial_schedule(**epsilon_cfg)
-#         # Jitting for speed.
-#         self.make_decision = jax.jit(self.make_decision)
-#         self.learn_step = jax.jit(self.learn_step)
-#
-#     def make_decision(self, obs):
-#         pass
-#
+class PPOAgent:
+    """A simple PPO agent. Compatible with discrete gym envs"""
+
+    def __init__(self, key, observation_space, action_space, learning_rate):
+        self.observation_space = observation_space
+        self.action_space = action_space
+        # Neural net and optimiser.
+        self.actor = CategoricalActor(
+            dim_obs=observation_space.shape[0],
+            num_act=action_space.n,
+            key=key,
+        )
+        self.critic = Critic(
+            dim_obs=observation_space.shape[0], 
+            key=key,
+        )
+        self.actor_optimizer = optax.adam(learning_rate)
+        self.critic_optimizer = optax.adam(learning_rate)
+        # self._epsilon_by_frame = optax.polynomial_schedule(**epsilon_cfg)
+        # Jitting for speed.
+        self.make_decision = jax.jit(self.make_decision)
+        self.learn_step = jax.jit(self.learn_step)
+
+    def make_decision(self, key, obs):
+        self.actor.gen_policy(obs)
+        act = self.actor.policy_distribution.sample(seed=key)
+        logp_a = self.actor.log_prob(act)
+        val = self.critic(obs)
+
+        return act, val, logp_a
+
+    def learn_step(self, key):
+        pass
+
+# test
+import gym
+env = gym.make("LunarLander-v2")
+rng = hk.PRNGSequence(jax.random.PRNGKey(123))
+agent = PPOAgent(
+    observation_space=env.observation_space,
+    action_space=env.action_space,
+    learning_rate=3e-4,
+    key = next(rng),
+)
+# buf = ReplayBuffer(capacity=int(1e6))
+pobs = env.reset()
+done = False
+ep, ep_return = 0, 0
+for st in range(int(3e3)):
+    env.render()
+    act, _, _ = agent.make_decision(
+        key=next(rng),
+        obs=pobs,
+    )
+    act = int(act)
+    nobs, rew, done, info = env.step(act)
+    # accumulate experience
+    # buf.store(pobs, act, rew, done, nobs)
+    ep_return += rew
+    pobs = nobs
+    # learn
+    # if buf.is_ready(batch_size=1024):
+    #     params, learner_state = agent.learn_step(
+    #         params, buf.sample(batch_size=1024, discount_factor=0.99), learner_state, next(rng)
+    #     )
+    if done:
+        print(f"episode {ep+1} return: {ep_return}")
+        print(f"total steps: {st+1}")
+        pobs = env.reset()
+        done = False
+        ep_return = 0
+        ep += 1
+
 
