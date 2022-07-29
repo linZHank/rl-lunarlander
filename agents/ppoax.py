@@ -108,6 +108,28 @@ class PPOAgent:
 
     def learn_step(self, key):
         pass
+    
+    def actor_loss(
+        self,
+        data,
+        # online_params,
+        # target_params,
+        # pobs_batch,
+        # acts_batch,
+        # rews_batch,
+        # disc_batch,
+        # nobs_batch,
+    ):
+        pi, lpa = self.actor(data['obs'], data['act'])
+        ratio = jnp.exp(lpa - data['lpa'])
+        batched_adv = data['adv']
+        batched_loss = jax.vmap(rlax.clipped_surrogate_pg_loss)
+        opp_objective = batched_loss(
+            prob_ratios_t=ratio,
+            adv_t=batched_adv,
+            epsilon=0.2,
+        )
+        return jnp.mean(rlax.l2_loss(opp_objective))
 
 # test
 import gym
