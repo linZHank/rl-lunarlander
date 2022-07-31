@@ -1,6 +1,7 @@
 """
 A simple PPO agent
 """
+import numpy as np
 import collections
 import scipy.signal
 import jax
@@ -37,21 +38,63 @@ def discount_cumsum(x, discount):
 class OnPolicyReplayBuffer(object):
     """A simple off-policy replay buffer."""
 
-    def __init__(self, capacity):
-        self.buffer = collections.deque(maxlen=capacity)
+    def __init__(
+        self, 
+        dim_obs: int, 
+        dim_act: int, 
+        capacity: int,
+        gamma=0.99,
+        lmbd=0.97,
+    ):
+
+        # params
+        self.dim_obs=dim_obs
+        self.dim_act=dim_act
+        self.gamma=gamma
+        self.lmbd=lmbd
+        self.capacity=capacity
+        # buffers
+        self.obs_buf = np.zeros((capacity, dim_obs), dtype=np.float32)
+        self.act_buf = np.squeeze(np.zeros((capacity, dim_act), dtype=np.float32)) # squeeze in case dim_act=1
+        self.adv_buf = np.zeros(capacity, dtype=np.float32)
+        self.rew_buf = np.zeros(capacity, dtype=np.float32)
+        self.ret_buf = np.zeros(capacity, dtype=np.float32)
+        self.val_buf = np.zeros(capacity, dtype=np.float32)
+        self.lpa_buf = np.zeros(capacity, dtype=np.float32)
+        # vars
+        self.ptr, self.path_start_idx, = 0, 0
 
     def store(self, observation, action, reward, value, log_prob):
-        if action is not None:
-            self.buffer.append(
-                (
-                    observation,
-                    action,
-                    reward,
-                    value,
-                    log_prob,
-                )
-            )
+        assert self.ptr <= self.capacity
+        self.obs_buf[self.ptr] = observation
+        self.act_buf[self.ptr] = action
+        self.rew_buf[self.ptr] = reward
+        self.val_buf[self.ptr] = value
+        self.lpa_buf[self.ptr] = log_prob
+        self.ptr += 1
 
+    # def store(self, observation, action, reward, value, log_prob):
+    #     assert self.ptr <= self.capacity
+    #     if action is not None:
+    #         self.buffer.append(
+    #             (
+    #                 observation,
+    #                 action,
+    #                 reward,
+    #                 value,
+    #                 log_prob,
+    #             )
+    #         )
+    #         self.ptr += 1
+    #
+    # def finish_traj(self, last_val=0):
+    #     """
+    #     Call this function at the end of a trajectory.
+    #     Compute advantage estimates with GAE-Lambda, and the rewards-to-go.
+    #     "last_val" argument should be 0 if episode done, otherwise, V(s_T).
+    #     """
+    #     
+    #     path_slice = slice(self.path_start_idx, self.ptr)
     # def sample(self, batch_size, discount_factor):
     #     pobs, acts, rews, dnfs, nobs = zip(*random.sample(self.buffer, batch_size))
     #     return (
@@ -179,7 +222,7 @@ agent = PPOAgent(
     learning_rate=3e-4,
     key=next(rng),
 )
-buf = OnPolicyReplayBuffer(capacity=int(1e4))
+buf = OnPolicyReplayBuffer(dim_obs=8, dim_act=1, capacity=int(1e4))
 pobs = env.reset()
 done = False
 ep, ep_return = 0, 0
