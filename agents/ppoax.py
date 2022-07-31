@@ -2,6 +2,7 @@
 A simple PPO agent
 """
 import collections
+import scipy.signal
 import jax
 import jax.numpy as jnp
 import haiku as hk
@@ -22,7 +23,50 @@ def build_network(num_outputs: int) -> hk.Transformed:
     return hk.without_apply_rng(hk.transform(net))
 
 
-class CategoricalActor:
+def discount_cumsum(x, discount):
+    """
+    magic from rllab for computing discounted cumulative sums of vectors.
+    input:
+        vector x, [x0, x1, x2]
+    output:
+        [x0+discount*x1+discount^2*x2, x1+discount*x2, x2]
+    """
+    return scipy.signal.lfilter([1], [1, float(-discount)], x[::-1], axis=0)[::-1]
+
+
+class OnPolicyReplayBuffer(object):
+    """A simple off-policy replay buffer."""
+
+    def __init__(self, capacity):
+        self.buffer = collections.deque(maxlen=capacity)
+
+    def store(self, observation, action, reward, value, log_prob):
+        if action is not None:
+            self.buffer.append(
+                (
+                    observation,
+                    action,
+                    reward,
+                    value,
+                    log_prob,
+                )
+            )
+
+    # def sample(self, batch_size, discount_factor):
+    #     pobs, acts, rews, dnfs, nobs = zip(*random.sample(self.buffer, batch_size))
+    #     return (
+    #         np.stack(pobs),
+    #         np.asarray(acts),
+    #         np.asarray(rews),
+    #         (1 - np.asarray(dnfs)) * discount_factor,
+    #         np.stack(nobs),
+    #     )
+    #
+    # def is_ready(self, batch_size):
+    #     return batch_size <= len(self.buffer)
+
+
+class CategoricalActor(object):
 
     def __init__(self, dim_obs: int, num_act: int, key: jnp.DeviceArray):
         self.dim_obs = dim_obs
@@ -59,7 +103,8 @@ class CategoricalActor:
 
         return self.policy_distribution, logp_a
 
-class Critic:
+
+class Critic(object):
     def __init__(self, dim_obs, key):
         self.dim_obs = dim_obs
         self.value_net = build_network(num_outputs=1)
@@ -73,9 +118,10 @@ class Critic:
 
     def __call__(self, obs):
 
-        return self.value_net.apply(self.weights, obs)
+        return jnp.squeeze(self.value_net.apply(self.weights, obs))
 
-class PPOAgent:
+
+class PPOAgent(object):
     """A simple PPO agent. Compatible with discrete gym envs"""
 
     def __init__(self, key, observation_space, action_space, learning_rate):
@@ -109,27 +155,19 @@ class PPOAgent:
     def learn_step(self, key):
         pass
     
-    def actor_loss(
-        self,
-        data,
-        # online_params,
-        # target_params,
-        # pobs_batch,
-        # acts_batch,
-        # rews_batch,
-        # disc_batch,
-        # nobs_batch,
-    ):
-        pi, lpa = self.actor(data['obs'], data['act'])
-        ratio = jnp.exp(lpa - data['lpa'])
-        batched_adv = data['adv']
+    def actor_loss(self, batch):
+        pi, lpa = self.actor(batch.pobs, batch.acts)
+        ratio = jnp.exp(lpa - batch.lpa)
+        batched_adv = batch.adv
         batched_loss = jax.vmap(rlax.clipped_surrogate_pg_loss)
-        opp_objective = batched_loss(
+        neg_obj = batched_loss(
             prob_ratios_t=ratio,
             adv_t=batched_adv,
             epsilon=0.2,
         )
-        return jnp.mean(rlax.l2_loss(opp_objective))
+
+        return jnp.mean(rlax.l2_loss(neg_obj))
+
 
 # test
 import gym
@@ -139,22 +177,22 @@ agent = PPOAgent(
     observation_space=env.observation_space,
     action_space=env.action_space,
     learning_rate=3e-4,
-    key = next(rng),
+    key=next(rng),
 )
-# buf = ReplayBuffer(capacity=int(1e6))
+buf = OnPolicyReplayBuffer(capacity=int(1e4))
 pobs = env.reset()
 done = False
 ep, ep_return = 0, 0
 for st in range(int(3e3)):
-    env.render()
-    act, _, _ = agent.make_decision(
+    # env.render()
+    act, val, lpa = agent.make_decision(
         key=next(rng),
         obs=pobs,
     )
     act = int(act)
     nobs, rew, done, info = env.step(act)
     # accumulate experience
-    # buf.store(pobs, act, rew, done, nobs)
+    buf.store(pobs, act, rew, val, lpa)
     ep_return += rew
     pobs = nobs
     # learn
