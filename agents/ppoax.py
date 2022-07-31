@@ -62,7 +62,7 @@ class OnPolicyReplayBuffer(object):
         self.val_buf = np.zeros(capacity, dtype=np.float32)
         self.lpa_buf = np.zeros(capacity, dtype=np.float32)
         # vars
-        self.ptr, self.path_start_idx, = 0, 0
+        self.ptr, self.traj_start_id = 0, 0
 
     def store(self, observation, action, reward, value, log_prob):
         assert self.ptr <= self.capacity
@@ -73,40 +73,53 @@ class OnPolicyReplayBuffer(object):
         self.lpa_buf[self.ptr] = log_prob
         self.ptr += 1
 
-    # def store(self, observation, action, reward, value, log_prob):
-    #     assert self.ptr <= self.capacity
-    #     if action is not None:
-    #         self.buffer.append(
-    #             (
-    #                 observation,
-    #                 action,
-    #                 reward,
-    #                 value,
-    #                 log_prob,
-    #             )
-    #         )
-    #         self.ptr += 1
-    #
-    # def finish_traj(self, last_val=0):
-    #     """
-    #     Call this function at the end of a trajectory.
-    #     Compute advantage estimates with GAE-Lambda, and the rewards-to-go.
-    #     "last_val" argument should be 0 if episode done, otherwise, V(s_T).
-    #     """
-    #     
-    #     path_slice = slice(self.path_start_idx, self.ptr)
-    # def sample(self, batch_size, discount_factor):
-    #     pobs, acts, rews, dnfs, nobs = zip(*random.sample(self.buffer, batch_size))
-    #     return (
-    #         np.stack(pobs),
-    #         np.asarray(acts),
-    #         np.asarray(rews),
-    #         (1 - np.asarray(dnfs)) * discount_factor,
-    #         np.stack(nobs),
-    #     )
-    #
-    # def is_ready(self, batch_size):
-    #     return batch_size <= len(self.buffer)
+    def finish_traj(self, last_val=0):
+        """
+        Call this function at the end of a trajectory.
+        Compute advantage estimates with GAE-Lambda, and the rewards-to-go.
+        "last_val" argument should be 0 if episode done, otherwise, V(s_T).
+        """
+        
+        traj_slice = slice(self.traj_start_id, self.ptr)
+        rew_traj = jnp.append(self.rew_buf[traj_slice], last_val)
+        val_traj = jnp.append(self.val_buf[traj_slice], last_val)
+        # the next two lines implement GAE-Lambda advantage calculation
+        adv_traj = rew_traj[:-1] + self.gamma * val_traj[1:] - val_traj[:-1]
+        self.adv_buf[traj_slice] = discount_cumsum(
+            adv_traj,
+            self.gamma*self.lmbd,
+        )
+        # the next line computes rewards-to-go, to be targets for the value function
+        self.ret_buf[traj_slice] = discount_cumsum(rew_traj, self.gamma)[:-1]
+        # set new trajectory starting point 
+        self.traj_start_id = self.ptr
+
+    def get(self):
+        """
+        Call this function to get all the buffered experience with normalize advantage.
+        """
+        assert self.ptr <= self.capacity
+        self.obs_buf = self.obs_buf[:self.ptr]
+        self.act_buf = self.act_buf[:self.ptr]
+        self.rew_buf = self.rew_buf[:self.ptr]
+        self.val_buf = self.val_buf[:self.ptr]
+        self.ret_buf = self.ret_buf[:self.ptr]
+        self.adv_buf = self.adv_buf[:self.ptr]
+        self.lpa_buf = self.lpa_buf[:self.ptr]
+        # the next three lines implement the advantage normalization trick
+        adv_mean = np.mean(self.adv_buf)
+        adv_std = np.clip(np.std(self.adv_buf), 1e-10, None)
+        self.adv_buf = (self.adv_buf - adv_mean) / adv_std
+        data = dict(
+            obs=jnp.asarray(self.obs_buf),
+            act=jnp.asarray(self.act_buf), 
+            ret=jnp.asarray(self.ret_buf),
+            adv=jnp.asarray(self.adv_buf), 
+            lpa=jnp.asarray(self.lpa_buf),
+        )
+        # reset buffer
+        self.__init__(self.dim_obs, self.dim_act, self.capacity) # On-Policy
+        return data
 
 
 class CategoricalActor(object):
@@ -222,7 +235,8 @@ agent = PPOAgent(
     learning_rate=3e-4,
     key=next(rng),
 )
-buf = OnPolicyReplayBuffer(dim_obs=8, dim_act=1, capacity=int(1e4))
+buf = OnPolicyReplayBuffer(dim_obs=8, dim_act=1, capacity=int(1e3))
+data = []
 pobs = env.reset()
 done = False
 ep, ep_return = 0, 0
@@ -244,6 +258,9 @@ for st in range(int(3e3)):
     #         params, buf.sample(batch_size=1024, discount_factor=0.99), learner_state, next(rng)
     #     )
     if done:
+        buf.finish_traj()
+        if buf.ptr > 500:
+            data.append(buf.get())
         print(f"episode {ep+1} return: {ep_return}")
         print(f"total steps: {st+1}")
         pobs = env.reset()
