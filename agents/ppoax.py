@@ -111,15 +111,15 @@ class OnPolicyReplayBuffer(object):
         adv_std = np.clip(np.std(self.adv_buf), 1e-10, None)
         self.adv_buf = (self.adv_buf - adv_mean) / adv_std
         data = dict(
-            obs=jnp.asarray(self.obs_buf),
-            act=jnp.asarray(self.act_buf), 
-            ret=jnp.asarray(self.ret_buf),
-            adv=jnp.asarray(self.adv_buf), 
-            lpa=jnp.asarray(self.lpa_buf),
+            obs=self.obs_buf,
+            act=self.act_buf,
+            ret=self.ret_buf,
+            adv=self.adv_buf,
+            lpa=self.lpa_buf,
         )
         # reset buffer
         self.__init__(self.dim_obs, self.dim_act, self.capacity) # On-Policy
-        return data
+        return {k: jnp.asarray(v) for k,v in data.items()}
 
 
 class CategoricalActor(object):
@@ -190,15 +190,16 @@ class PPOAgent(object):
             key=key,
         )
         self.critic = Critic(
-            dim_obs=observation_space.shape[0], 
+            dim_obs=observation_space.shape[0],
             key=key,
         )
         self.actor_optimizer = optax.adam(learning_rate)
         self.critic_optimizer = optax.adam(learning_rate)
-        # self._epsilon_by_frame = optax.polynomial_schedule(**epsilon_cfg)
+        self.actropt_state = self.actor_optimizer.init(self.actor.weights)
+        self.critopt_state = self.critic_optimizer.init(self.critic.weights)
         # Jitting for speed.
         self.make_decision = jax.jit(self.make_decision)
-        self.learn_step = jax.jit(self.learn_step)
+        self.update_actor = jax.jit(self.update_actor)
 
     def make_decision(self, key, obs):
         self.actor.gen_policy(obs)
@@ -208,15 +209,19 @@ class PPOAgent(object):
 
         return act, val, logp_a
 
-    def learn_step(self, key):
-        pass
+    def update_actor(self, data):
+        dloss = jax.grad(self.actor_loss)(data)
+        updates, self.actropt_state = self.actor_optimizer.update(
+            dloss, self.actropt_state
+        )
+        self.actor.weights = optax.apply_updates(self.actor.weights, updates)
     
-    def actor_loss(self, batch):
-        pi, lpa = self.actor(batch.pobs, batch.acts)
-        ratio = jnp.exp(lpa - batch.lpa)
-        batched_adv = batch.adv
-        batched_loss = jax.vmap(rlax.clipped_surrogate_pg_loss)
-        neg_obj = batched_loss(
+    def actor_loss(self, data):
+        pi, lpa = self.actor(data['obs'], data['act'])
+        ratio = jnp.exp(lpa - data['lpa'])
+        batched_adv = data['adv']
+        # batched_loss = jax.vmap(rlax.clipped_surrogate_pg_loss)
+        neg_obj = rlax.clipped_surrogate_pg_loss(
             prob_ratios_t=ratio,
             adv_t=batched_adv,
             epsilon=0.2,
@@ -236,7 +241,6 @@ agent = PPOAgent(
     key=next(rng),
 )
 buf = OnPolicyReplayBuffer(dim_obs=8, dim_act=1, capacity=int(1e3))
-data = []
 pobs = env.reset()
 done = False
 ep, ep_return = 0, 0
@@ -260,7 +264,7 @@ for st in range(int(3e3)):
     if done:
         buf.finish_traj()
         if buf.ptr > 500:
-            data.append(buf.get())
+            data = buf.get()
         print(f"episode {ep+1} return: {ep_return}")
         print(f"total steps: {st+1}")
         pobs = env.reset()
