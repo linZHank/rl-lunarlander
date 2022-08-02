@@ -209,25 +209,28 @@ class PPOAgent(object):
 
         return act, val, logp_a
 
+    # TODO: fix grads, should've record mlp's derivatives
     def update_actor(self, data):
-        dloss, grads = jax.grad(self.actor_loss_fn)(data)
+        loss_value, grads = jax.value_and_grad(self.aloss_fn)(data)
         updates, self.actropt_state = self.actor_optimizer.update(
-            dloss, self.actropt_state
+            grads,
+            self.actropt_state,
+            self.actor.params,
         )
         self.actor.params = optax.apply_updates(self.actor.params, updates)
+        # print(f"actor loss: {loss_value}")
     
-    def actor_loss_fn(self, data):
+    def aloss_fn(self, data):
         pi, lpa = self.actor(data['obs'], data['act'])
         ratio = jnp.exp(lpa - data['lpa'])
-        batched_adv = data['adv']
         # batched_loss = jax.vmap(rlax.clipped_surrogate_pg_loss)
         neg_obj = rlax.clipped_surrogate_pg_loss(
             prob_ratios_t=ratio,
-            adv_t=batched_adv,
+            adv_t=data['adv'],
             epsilon=0.2,
         )
 
-        return jnp.mean(rlax.l2_loss(neg_obj))
+        return neg_obj  # jnp.mean(rlax.l2_loss(neg_obj))
 
 
 # test
@@ -265,6 +268,7 @@ for st in range(int(3e3)):
         buf.finish_traj()
         if buf.ptr > 500:
             data = buf.get()
+            # agent.update_actor(data)
         print(f"episode {ep+1} return: {ep_return}")
         print(f"total steps: {st+1}")
         pobs = env.reset()
