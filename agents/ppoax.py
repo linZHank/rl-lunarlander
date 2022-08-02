@@ -128,20 +128,20 @@ class CategoricalActor(object):
         self.dim_obs = dim_obs
         self.num_act = num_act
         self.policy_net = build_network(num_outputs=num_act)
-        self.weights = None
+        self.params = None
         self.policy_distribution = None
         self.init_policy_net(key)
 
     def init_policy_net(self, key: jnp.DeviceArray):
         sample_input = jax.random.normal(key, shape=(self.dim_obs, ))
         # sample_input = jnp.expand_dims(sample_input, 0)
-        self.weights = self.policy_net.init(key, sample_input)
+        self.params = self.policy_net.init(key, sample_input)
 
     def gen_policy(self, obs):
         """
         pi(a|s)
         """
-        logits = jnp.squeeze(self.policy_net.apply(self.weights, obs))
+        logits = jnp.squeeze(self.policy_net.apply(self.params, obs))
         self.policy_distribution = distrax.Categorical(logits=logits)
 
         # return self.policy
@@ -164,17 +164,17 @@ class Critic(object):
     def __init__(self, dim_obs, key):
         self.dim_obs = dim_obs
         self.value_net = build_network(num_outputs=1)
-        self.weights = None
+        self.params = None
         self.init_value_net(key)
 
     def init_value_net(self, key):
         sample_input = jax.random.normal(key, shape=(self.dim_obs, ))
         # sample_input = jnp.expand_dims(sample_input, 0)
-        self.weights = self.value_net.init(key, sample_input)
+        self.params = self.value_net.init(key, sample_input)
 
     def __call__(self, obs):
 
-        return jnp.squeeze(self.value_net.apply(self.weights, obs))
+        return jnp.squeeze(self.value_net.apply(self.params, obs))
 
 
 class PPOAgent(object):
@@ -195,8 +195,8 @@ class PPOAgent(object):
         )
         self.actor_optimizer = optax.adam(learning_rate)
         self.critic_optimizer = optax.adam(learning_rate)
-        self.actropt_state = self.actor_optimizer.init(self.actor.weights)
-        self.critopt_state = self.critic_optimizer.init(self.critic.weights)
+        self.actropt_state = self.actor_optimizer.init(self.actor.params)
+        self.critopt_state = self.critic_optimizer.init(self.critic.params)
         # Jitting for speed.
         self.make_decision = jax.jit(self.make_decision)
         self.update_actor = jax.jit(self.update_actor)
@@ -210,13 +210,13 @@ class PPOAgent(object):
         return act, val, logp_a
 
     def update_actor(self, data):
-        dloss = jax.grad(self.actor_loss)(data)
+        dloss, grads = jax.grad(self.actor_loss_fn)(data)
         updates, self.actropt_state = self.actor_optimizer.update(
             dloss, self.actropt_state
         )
-        self.actor.weights = optax.apply_updates(self.actor.weights, updates)
+        self.actor.params = optax.apply_updates(self.actor.params, updates)
     
-    def actor_loss(self, data):
+    def actor_loss_fn(self, data):
         pi, lpa = self.actor(data['obs'], data['act'])
         ratio = jnp.exp(lpa - data['lpa'])
         batched_adv = data['adv']
