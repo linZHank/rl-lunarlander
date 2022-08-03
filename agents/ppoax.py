@@ -128,20 +128,22 @@ class CategoricalActor(object):
         self.dim_obs = dim_obs
         self.num_act = num_act
         self.policy_net = build_network(num_outputs=num_act)
-        self.params = None
+        # self.params = None
         self.policy_distribution = None
         self.init_policy_net(key)
 
     def init_policy_net(self, key: jnp.DeviceArray):
         sample_input = jax.random.normal(key, shape=(self.dim_obs, ))
         # sample_input = jnp.expand_dims(sample_input, 0)
-        self.params = self.policy_net.init(key, sample_input)
+        params = self.policy_net.init(key, sample_input)
 
-    def gen_policy(self, obs):
+        return params
+
+    def gen_policy(self, params, obs):
         """
         pi(a|s)
         """
-        logits = jnp.squeeze(self.policy_net.apply(self.params, obs))
+        logits = jnp.squeeze(self.policy_net.apply(params, obs))
         self.policy_distribution = distrax.Categorical(logits=logits)
 
         # return self.policy
@@ -151,8 +153,8 @@ class CategoricalActor(object):
 
         return logp_a
 
-    def __call__(self, obs, act=None):
-        self.gen_policy(obs)
+    def __call__(self, params, obs, act=None):
+        self.gen_policy(params, obs)
         logp_a = None
         if act is not None:
             logp_a = self.log_prob(act)
@@ -195,14 +197,19 @@ class PPOAgent(object):
         )
         self.actor_optimizer = optax.adam(learning_rate)
         self.critic_optimizer = optax.adam(learning_rate)
-        self.actropt_state = self.actor_optimizer.init(self.actor.params)
-        self.critopt_state = self.critic_optimizer.init(self.critic.params)
+        # self.actropt_state = self.actor_optimizer.init(self.actor.params)
+        # self.critopt_state = self.critic_optimizer.init(self.critic.params)
         # Jitting for speed.
         self.make_decision = jax.jit(self.make_decision)
         self.update_actor = jax.jit(self.update_actor)
 
-    def make_decision(self, key, obs):
-        self.actor.gen_policy(obs)
+    def init_aopt(self, params):
+        opt_state = self.actor_optimizer.init(params)
+
+        return opt_state
+
+    def make_decision(self, key, params, obs):
+        self.actor.gen_policy(params, obs)
         act = self.actor.policy_distribution.sample(seed=key)
         logp_a = self.actor.log_prob(act)
         val = self.critic(obs)
@@ -210,18 +217,20 @@ class PPOAgent(object):
         return act, val, logp_a
 
     # TODO: fix grads, should've record mlp's derivatives
-    def update_actor(self, data):
-        loss_value, grads = jax.value_and_grad(self.aloss_fn)(data)
-        updates, self.actropt_state = self.actor_optimizer.update(
+    def update_actor(self, opt_state, params, data):
+        loss_value, grads = jax.value_and_grad(self.aloss_fn)(params, data)
+        updates, opt_state = self.actor_optimizer.update(
             grads,
-            self.actropt_state,
-            self.actor.params,
+            opt_state,
+            params,
         )
-        self.actor.params = optax.apply_updates(self.actor.params, updates)
+        params = optax.apply_updates(params, updates)
         # print(f"actor loss: {loss_value}")
-    
-    def aloss_fn(self, data):
-        pi, lpa = self.actor(data['obs'], data['act'])
+
+        return opt_state, params, loss_value
+
+    def aloss_fn(self, params, data):
+        pi, lpa = self.actor(params, data['obs'], data['act'])
         ratio = jnp.exp(lpa - data['lpa'])
         # batched_loss = jax.vmap(rlax.clipped_surrogate_pg_loss)
         neg_obj = rlax.clipped_surrogate_pg_loss(
@@ -243,6 +252,8 @@ agent = PPOAgent(
     learning_rate=3e-4,
     key=next(rng),
 )
+aparams = agent.actor.init_policy_net(next(rng))
+aopt_state = agent.init_aopt(aparams)
 buf = OnPolicyReplayBuffer(dim_obs=8, dim_act=1, capacity=int(1e3))
 pobs = env.reset()
 done = False
@@ -251,6 +262,7 @@ for st in range(int(3e3)):
     # env.render()
     act, val, lpa = agent.make_decision(
         key=next(rng),
+        params=aparams,
         obs=pobs,
     )
     act = int(act)
@@ -268,7 +280,12 @@ for st in range(int(3e3)):
         buf.finish_traj()
         if buf.ptr > 500:
             data = buf.get()
-            # agent.update_actor(data)
+            aopt_state, aparams, aloss = agent.update_actor(
+                opt_state=aopt_state,
+                params=aparams,
+                data=data,
+            )
+            print(f"loss: {aloss}")
         print(f"episode {ep+1} return: {ep_return}")
         print(f"total steps: {st+1}")
         pobs = env.reset()
