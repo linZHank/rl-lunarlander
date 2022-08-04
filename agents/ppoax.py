@@ -172,11 +172,13 @@ class Critic(object):
     def init_value_net(self, key):
         sample_input = jax.random.normal(key, shape=(self.dim_obs, ))
         # sample_input = jnp.expand_dims(sample_input, 0)
-        self.params = self.value_net.init(key, sample_input)
+        params = self.value_net.init(key, sample_input)
 
-    def __call__(self, obs):
+        return params
 
-        return jnp.squeeze(self.value_net.apply(self.params, obs))
+    def __call__(self, params, obs):
+
+        return jnp.squeeze(self.value_net.apply(params, obs))
 
 
 class PPOAgent(object):
@@ -208,15 +210,19 @@ class PPOAgent(object):
 
         return opt_state
 
-    def make_decision(self, key, params, obs):
-        self.actor.gen_policy(params, obs)
+    def init_copt(self, params):
+        opt_state = self.critic_optimizer.init(params)
+
+        return opt_state
+
+    def make_decision(self, key, aparams, cparams, obs):
+        self.actor.gen_policy(aparams, obs)
         act = self.actor.policy_distribution.sample(seed=key)
         logp_a = self.actor.log_prob(act)
-        val = self.critic(obs)
+        val = self.critic(cparams, obs)
 
         return act, val, logp_a
 
-    # TODO: fix grads, should've record mlp's derivatives
     def update_actor(self, opt_state, params, data):
         loss_value, grads = jax.value_and_grad(self.aloss_fn)(params, data)
         updates, opt_state = self.actor_optimizer.update(
@@ -225,7 +231,17 @@ class PPOAgent(object):
             params,
         )
         params = optax.apply_updates(params, updates)
-        # print(f"actor loss: {loss_value}")
+
+        return opt_state, params, loss_value
+
+    def update_critic(self, opt_state, params, data):
+        loss_value, grads = jax.value_and_grad(self.closs_fn)(params, data)
+        updates, opt_state = self.critic_optimizer.update(
+            grads,
+            opt_state,
+            params,
+        )
+        params = optax.apply_updates(params, updates)
 
         return opt_state, params, loss_value
 
@@ -241,6 +257,10 @@ class PPOAgent(object):
 
         return neg_obj  # jnp.mean(rlax.l2_loss(neg_obj))
 
+    def closs_fn(self, params, data):
+        pred_ret = self.critic(params, data['obs'])
+
+        return rlax.l2_loss(pred_ret, data['ret']).mean()
 
 # test
 import gym
@@ -254,6 +274,8 @@ agent = PPOAgent(
 )
 aparams = agent.actor.init_policy_net(next(rng))
 aopt_state = agent.init_aopt(aparams)
+cparams = agent.critic.init_value_net(next(rng))
+copt_state = agent.init_copt(cparams)
 buf = OnPolicyReplayBuffer(dim_obs=8, dim_act=1, capacity=int(1e3))
 pobs = env.reset()
 done = False
@@ -262,7 +284,8 @@ for st in range(int(3e3)):
     # env.render()
     act, val, lpa = agent.make_decision(
         key=next(rng),
-        params=aparams,
+        aparams=aparams,
+        cparams=cparams,
         obs=pobs,
     )
     act = int(act)
@@ -280,12 +303,21 @@ for st in range(int(3e3)):
         buf.finish_traj()
         if buf.ptr > 500:
             data = buf.get()
-            aopt_state, aparams, aloss = agent.update_actor(
-                opt_state=aopt_state,
-                params=aparams,
-                data=data,
-            )
-            print(f"loss: {aloss}")
+            for i in range(10):
+                aopt_state, aparams, aloss = agent.update_actor(
+                    opt_state=aopt_state,
+                    params=aparams,
+                    data=data,
+                )
+                print(f"epoch: {i+1}, actor loss: {aloss}")
+            for j in range(10):
+                copt_state, cparams, closs = agent.update_critic(
+                    opt_state=copt_state,
+                    params=cparams,
+                    data=data,
+                )
+                print(f"epoch: {i+1}, critic loss: {closs}")
+
         print(f"episode {ep+1} return: {ep_return}")
         print(f"total steps: {st+1}")
         pobs = env.reset()
