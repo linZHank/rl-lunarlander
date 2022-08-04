@@ -204,6 +204,7 @@ class PPOAgent(object):
         # Jitting for speed.
         self.make_decision = jax.jit(self.make_decision)
         self.update_actor = jax.jit(self.update_actor)
+        self.update_critic = jax.jit(self.update_critic)
 
     def init_aopt(self, params):
         opt_state = self.actor_optimizer.init(params)
@@ -223,6 +224,7 @@ class PPOAgent(object):
 
         return act, val, logp_a
 
+    # TODO: need compute kl-divergence and entropy
     def update_actor(self, opt_state, params, data):
         loss_value, grads = jax.value_and_grad(self.aloss_fn)(params, data)
         updates, opt_state = self.actor_optimizer.update(
@@ -276,11 +278,11 @@ aparams = agent.actor.init_policy_net(next(rng))
 aopt_state = agent.init_aopt(aparams)
 cparams = agent.critic.init_value_net(next(rng))
 copt_state = agent.init_copt(cparams)
-buf = OnPolicyReplayBuffer(dim_obs=8, dim_act=1, capacity=int(1e3))
+buf = OnPolicyReplayBuffer(dim_obs=8, dim_act=1, capacity=int(5e3))
 pobs = env.reset()
 done = False
 ep, ep_return = 0, 0
-for st in range(int(3e3)):
+for st in range(int(2e6)):
     # env.render()
     act, val, lpa = agent.make_decision(
         key=next(rng),
@@ -301,22 +303,22 @@ for st in range(int(3e3)):
     #     )
     if done:
         buf.finish_traj()
-        if buf.ptr > 500:
+        if buf.ptr > 4000:
             data = buf.get()
-            for i in range(10):
+            for i in range(80):
                 aopt_state, aparams, aloss = agent.update_actor(
                     opt_state=aopt_state,
                     params=aparams,
                     data=data,
                 )
                 print(f"epoch: {i+1}, actor loss: {aloss}")
-            for j in range(10):
+            for j in range(80):
                 copt_state, cparams, closs = agent.update_critic(
                     opt_state=copt_state,
                     params=cparams,
                     data=data,
                 )
-                print(f"epoch: {i+1}, critic loss: {closs}")
+                print(f"epoch: {j+1}, critic loss: {closs}")
 
         print(f"episode {ep+1} return: {ep_return}")
         print(f"total steps: {st+1}")
