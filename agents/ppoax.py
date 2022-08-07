@@ -226,7 +226,7 @@ class PPOAgent(object):
 
     # TODO: need compute kl-divergence and entropy
     def update_actor(self, opt_state, params, data):
-        loss_value, grads = jax.value_and_grad(self.aloss_fn)(params, data)
+        (loss_value, aux_data), grads = jax.value_and_grad(self.aloss_fn, has_aux=True)(params, data)
         updates, opt_state = self.actor_optimizer.update(
             grads,
             opt_state,
@@ -234,7 +234,7 @@ class PPOAgent(object):
         )
         params = optax.apply_updates(params, updates)
 
-        return opt_state, params, loss_value
+        return opt_state, params, loss_value, aux_data
 
     def update_critic(self, opt_state, params, data):
         loss_value, grads = jax.value_and_grad(self.closs_fn)(params, data)
@@ -256,8 +256,10 @@ class PPOAgent(object):
             adv_t=data['adv'],
             epsilon=0.2,
         )
+        ent = pi.entropy()
+        approx_kld = data['lpa'] - lpa
 
-        return neg_obj  # jnp.mean(rlax.l2_loss(neg_obj))
+        return neg_obj, {'ent': ent.mean(), 'approx_kld': approx_kld.mean()}  # jnp.mean(rlax.l2_loss(neg_obj))
 
     def closs_fn(self, params, data):
         pred_ret = self.critic(params, data['obs'])
@@ -282,7 +284,7 @@ buf = OnPolicyReplayBuffer(dim_obs=8, dim_act=1, capacity=int(5e3))
 pobs = env.reset()
 done = False
 ep, ep_return = 0, 0
-for st in range(int(2e6)):
+for st in range(int(5e5)):
     # env.render()
     act, val, lpa = agent.make_decision(
         key=next(rng),
@@ -306,12 +308,15 @@ for st in range(int(2e6)):
         if buf.ptr > 4000:
             data = buf.get()
             for i in range(80):
-                aopt_state, aparams, aloss = agent.update_actor(
+                aopt_state, aparams, aloss, aux_data = agent.update_actor(
                     opt_state=aopt_state,
                     params=aparams,
                     data=data,
                 )
                 print(f"epoch: {i+1}, actor loss: {aloss}")
+                if aux_data['approx_kld'] > 0.02:
+                    print(f"\nEarly stopping at epoch {i+1} due to reaching max kl-divergence.\n")
+                    break
             for j in range(80):
                 copt_state, cparams, closs = agent.update_critic(
                     opt_state=copt_state,
