@@ -1,6 +1,7 @@
 """
 A simple PPO agent
 """
+import time
 import numpy as np
 import collections
 import scipy.signal
@@ -17,7 +18,7 @@ def build_network(num_outputs: int) -> hk.Transformed:
     """Factory for a simple MLP network (for approximating Q-values)."""
 
     def net(inputs):
-        mlp = hk.nets.MLP([128, 128, num_outputs])
+        mlp = hk.nets.MLP([256, 256, num_outputs])
 
         return mlp(inputs)
 
@@ -197,8 +198,8 @@ class PPOAgent(object):
             dim_obs=observation_space.shape[0],
             key=key,
         )
-        self.actor_optimizer = optax.adam(learning_rate)
-        self.critic_optimizer = optax.adam(learning_rate)
+        self.actor_optimizer = optax.adam(3e-4)
+        self.critic_optimizer = optax.adam(1e-3)
         # self.actropt_state = self.actor_optimizer.init(self.actor.params)
         # self.critopt_state = self.critic_optimizer.init(self.critic.params)
         # Jitting for speed.
@@ -284,7 +285,7 @@ buf = OnPolicyReplayBuffer(dim_obs=8, dim_act=1, capacity=int(5e3))
 pobs = env.reset()
 done = False
 ep, ep_return = 0, 0
-for st in range(int(5e5)):
+for st in range(int(4e5)):
     # env.render()
     act, val, lpa = agent.make_decision(
         key=next(rng),
@@ -306,6 +307,7 @@ for st in range(int(5e5)):
     if done:
         buf.finish_traj()
         if buf.ptr > 4000:
+            tic = time.time()
             data = buf.get()
             for i in range(80):
                 aopt_state, aparams, aloss, aux_data = agent.update_actor(
@@ -313,7 +315,7 @@ for st in range(int(5e5)):
                     params=aparams,
                     data=data,
                 )
-                print(f"epoch: {i+1}, actor loss: {aloss}")
+                # print(f"epoch: {i+1}, actor loss: {aloss}")
                 if aux_data['approx_kld'] > 0.02:
                     print(f"\nEarly stopping at epoch {i+1} due to reaching max kl-divergence.\n")
                     break
@@ -323,7 +325,8 @@ for st in range(int(5e5)):
                     params=cparams,
                     data=data,
                 )
-                print(f"epoch: {j+1}, critic loss: {closs}")
+                # print(f"epoch: {j+1}, critic loss: {closs}")
+            print(f"training time: {time.time() - tic}")
 
         print(f"episode {ep+1} return: {ep_return}")
         print(f"total steps: {st+1}")
